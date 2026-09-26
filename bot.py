@@ -22,7 +22,7 @@ load_dotenv()
 # =========================================================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. "https://your-app.onrender.com"
+WEBHOOK_URL = "https://telegram-bot-3-9mrm.onrender.com" # e.g. "https://your-app.onrender.com"
 
 if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
     raise ValueError("Missing TELEGRAM_TOKEN or GEMINI_API_KEY in environment variables")
