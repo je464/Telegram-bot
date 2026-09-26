@@ -1,4 +1,3 @@
-pyTelegramBotAPI
 import os
 import shelve
 from datetime import date, datetime, timedelta
