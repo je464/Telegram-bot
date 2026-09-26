@@ -2,33 +2,37 @@ import os
 import shelve
 from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
+from flask import Flask, request
 
 import telebot
 from telebot.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    LabeledPrice
+    LabeledPrice,
+    Update
 )
 
 from google import genai
 from google.genai import types
-load_dotenv("config.env")
 
+load_dotenv()
 
 # =========================================================
 # CONFIG
 # =========================================================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. "https://your-app.onrender.com"
 
 if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
-    raise ValueError("Missing TELEGRAM_TOKEN or GEMINI_API_KEY in .env file")
+    raise ValueError("Missing TELEGRAM_TOKEN or GEMINI_API_KEY in environment variables")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 client = genai.Client(api_key=GEMINI_API_KEY)
+app = Flask(__name__)
 
 # =========================================================
-# ADMINS
+# ADMINS & MODELS
 # =========================================================
 OWNER_ID = 7005552426
 ADMIN_IDS = [7005552426, 7056087460]
@@ -36,9 +40,6 @@ ADMIN_IDS = [7005552426, 7056087460]
 def is_admin(uid):
     return uid in ADMIN_IDS
 
-# =========================================================
-# MODELS
-# =========================================================
 AVAILABLE_MODELS = [
     "gemini-3.5-flash",
     "gemini-3.1-pro",
@@ -48,7 +49,7 @@ AVAILABLE_MODELS = [
 ]
 
 # =========================================================
-# SYSTEM PROMPT
+# SYSTEM PROMPT & CONSTANTS
 # =========================================================
 SYSTEM_PROMPT = """
 You are a general-purpose AI assistant like ChatGPT.
@@ -78,16 +79,10 @@ STYLE RULES:
 - respond naturally and clearly
 """
 
-# =========================================================
-# SETTINGS
-# =========================================================
 FREE_LIMIT = 5
 PREMIUM_PRICE = 100
 PREMIUM_DAYS = 30
 
-# =========================================================
-# IDENTITY ENFORCER
-# =========================================================
 def enforce_identity(text: str) -> str:
     lower = text.lower()
     if "google" in lower or "gemini" in lower:
@@ -95,7 +90,7 @@ def enforce_identity(text: str) -> str:
     return text
 
 # =========================================================
-# PROFILE
+# PROFILE & LOGS
 # =========================================================
 def get_profile(uid):
     with shelve.open("db", writeback=True) as db:
@@ -126,9 +121,6 @@ def save_profile(uid, data):
     with shelve.open("db", writeback=True) as db:
         db[str(uid)] = data
 
-# =========================================================
-# CHAT LOGS
-# =========================================================
 def save_chat(uid, role, text):
     with shelve.open("logs", writeback=True) as db:
         k = str(uid)
@@ -141,7 +133,7 @@ def save_chat(uid, role, text):
         })
 
 # =========================================================
-# AI ENGINE (WITH MEMORY)
+# AI ENGINE
 # =========================================================
 def ask_ai(uid, text):
     with shelve.open("logs") as db:
@@ -150,7 +142,6 @@ def ask_ai(uid, text):
     for model_name in AVAILABLE_MODELS:
         try:
             contents = []
-            
             for entry in history[-10:]:
                 role = "user" if entry["role"] == "user" else "model"
                 contents.append(types.Content(role=role, parts=[types.Part.from_text(text=entry["text"])]))
@@ -174,7 +165,7 @@ def ask_ai(uid, text):
     return "AI servers are currently busy. Please try again later."
 
 # =========================================================
-# MENU
+# MENUS & HANDLERS
 # =========================================================
 def main_menu(uid):
     kb = InlineKeyboardMarkup()
@@ -188,9 +179,6 @@ def premium_menu():
     kb.add(InlineKeyboardButton(f"Buy Premium {PREMIUM_PRICE} ⭐ / {PREMIUM_DAYS} Days", callback_data="buy"))
     return kb
 
-# =========================================================
-# HANDLERS
-# =========================================================
 @bot.message_handler(commands=['start'])
 def start(m):
     uid = m.from_user.id
@@ -281,6 +269,36 @@ def chat(m):
         profile["count"] += 1
         save_profile(uid, profile)
 
+# =========================================================
+# WEBHOOK ENDPOINTS
+# =========================================================
+@app.route("/", methods=["GET"])
+def home():
+    return "Bot is active!", 200
+
+@app.route("/" + TELEGRAM_TOKEN, methods=["POST"])
+def webhook():
+    if request.headers.get("content-type") == "application/json":
+        json_string = request.get_data().decode("utf-8")
+        update = Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return "OK", 200
+    return "Forbidden", 403
+
+# =========================================================
+# RUNNER
+# =========================================================
 if __name__ == "__main__":
-    print("BOT RUNNING...")
-    bot.infinity_polling()
+    bot.remove_webhook()
+    
+    if WEBHOOK_URL:
+        full_webhook_url = f"{WEBHOOK_URL.rstrip('/')}/{TELEGRAM_TOKEN}"
+        bot.set_webhook(url=full_webhook_url)
+        print(f"Webhook set to: {full_webhook_url}")
+    else:
+        print("WEBHOOK_URL not set. Running in polling mode...")
+        bot.infinity_polling()
+        exit()
+
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
