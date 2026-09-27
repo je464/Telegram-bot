@@ -1,6 +1,7 @@
 import html
 import io
 import os
+import re
 import shelve
 import threading
 import yt_dlp
@@ -72,9 +73,10 @@ Only state that you were created by Jephthah Udoka if the user explicitly asks w
 
 Never mention Google or Gemini as your creator.
 
-STYLE RULES:
-- Use clean, naturally spaced paragraphs
-- Respond naturally and clearly"""
+FORMATTING RULES:
+- Never use markdown headings like #, ##, or ###.
+- Use bold text for emphasis or section headings.
+- Use clean, naturally spaced paragraphs."""
 
 FREE_LIMIT = 5
 PREMIUM_PRICE = 100
@@ -132,6 +134,15 @@ def save_chat(uid, role, text):
 # =========================================================
 # AI ENGINE
 # =========================================================
+def process_markdown_text(text: str) -> str:
+    """Converts markdown headers, bolding, and bullet styling to HTML tags."""
+    text = re.sub(r'^#{1,6}\s*(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
+    text = html.escape(text)
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
+    text = text.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
+    return text
+
 def format_ai_response(text: str) -> str:
     """Formats Markdown code blocks into Telegram HTML code blocks and cleans line spacing."""
     if "```" in text:
@@ -139,17 +150,15 @@ def format_ai_response(text: str) -> str:
         formatted = ""
         for i, part in enumerate(parts):
             if i % 2 == 1:
-                # Code section: strip optional language identifier and wrap in pre/code tags
                 lines = part.split("\n", 1)
                 code_text = lines[1] if len(lines) > 1 and lines[0].strip().isalnum() else part
                 formatted += f"<pre><code>{html.escape(code_text.strip())}</code></pre>"
             else:
-                formatted += html.escape(part)
+                formatted += process_markdown_text(part)
         text = formatted
     else:
-        text = html.escape(text)
+        text = process_markdown_text(text)
 
-    # Clean double spacing between paragraphs
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     return "\n\n".join(paragraphs)
 
@@ -510,33 +519,6 @@ def voice(m):
                 if not is_admin(uid) and not profile["premium"]:
                     profile["count"] += 1
                     save_profile(uid, profile)
-                return
-        except Exception: 
-            continue
-    bot.reply_to(m, "Voice error")
-
-@bot.message_handler(func=lambda m: True)
-def chat(m):
-    uid = m.from_user.id
-    profile = get_profile(uid)
-    if not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
-        bot.reply_to(m, "Limit reached")
-        return
-     
-    bot.send_chat_action(m.chat.id, "typing")
-    reply = ask_ai(uid, m.text)
-    
-    save_chat(uid, "user", m.text)
-    save_chat(uid, "bot", reply)
-    
-    try:
-        bot.reply_to(m, reply, parse_mode="HTML")
-    except Exception:
-        bot.reply_to(m, reply)
-    
-    if not is_admin(uid) and not profile["premium"]:
-        profile["count"] += 1
-        save_profile(uid, profile)
 
 # =========================================================
 # WEBHOOK ENDPOINTS & THREADING
@@ -557,5 +539,3 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-           
-   
