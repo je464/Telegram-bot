@@ -27,7 +27,7 @@ WEBHOOK_URL = "https://telegram-bot-4-p8mu.onrender.com" # e.g. "https://your-ap
 if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
     raise ValueError("Missing TELEGRAM_TOKEN or GEMINI_API_KEY in environment variables")
 
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
 client = genai.Client(api_key=GEMINI_API_KEY)
 app = Flask(__name__)
 
@@ -272,6 +272,9 @@ def chat(m):
 # =========================================================
 # WEBHOOK ENDPOINTS
 # =========================================================
+# =========================================================
+# WEBHOOK ENDPOINTS
+# =========================================================
 @app.route("/", methods=["GET"])
 def home():
     return "Bot is active!", 200
@@ -280,11 +283,28 @@ def home():
 def webhook():
     if request.headers.get("content-type") == "application/json":
         json_string = request.get_data().decode("utf-8")
-        update = Update.de_json(json_string)
+        update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
         return "OK", 200
     return "Forbidden", 403
 
+# =========================================================
+# AUTO-SET WEBHOOK ON GUNICORN/RENDER STARTUP
+# =========================================================
+if WEBHOOK_URL:
+    full_webhook_url = f"{WEBHOOK_URL.rstrip('/')}/{TELEGRAM_TOKEN}"
+    try:
+        bot.remove_webhook()
+        bot.set_webhook(url=full_webhook_url)
+        print(f"Webhook set to: {full_webhook_url}")
+    except Exception as e:
+        print(f"Error setting webhook: {e}")
+
+# Runner for local testing only
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+    
 # =========================================================
 # RUNNER
 # =========================================================
