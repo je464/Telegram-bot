@@ -34,6 +34,16 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
 client = genai.Client(api_key=GEMINI_API_KEY)
 app = Flask(__name__)
 
+# Set Webhook immediately on script load
+if WEBHOOK_URL:
+    full_webhook_url = f"{WEBHOOK_URL.rstrip('/')}/{TELEGRAM_TOKEN}"
+    try:
+        bot.remove_webhook()
+        bot.set_webhook(url=full_webhook_url)
+        print(f"✅ Webhook successfully set to: {full_webhook_url}")
+    except Exception as e:
+        print(f"❌ Error setting webhook: {e}")
+
 # =========================================================
 # ADMINS & MODELS
 # =========================================================
@@ -44,9 +54,11 @@ def is_admin(uid):
     return uid in ADMIN_IDS
 
 AVAILABLE_MODELS = [
-    "gemini-2.5-flash",
+    "gemini-3.5-flash",
+    "gemini-3.1-pro",
+    "gemini-3.1-flash-lite",
     "gemini-2.5-pro",
-    "gemini-2.5-flash-lite"
+    "gemini-2.5-flash"
 ]
 
 # =========================================================
@@ -67,6 +79,12 @@ STYLE RULES:
 FREE_LIMIT = 5
 PREMIUM_PRICE = 100
 PREMIUM_DAYS = 30
+
+def enforce_identity(text: str) -> str:
+    lower = text.lower()
+    if "google" in lower or "gemini" in lower:
+        return "I was created by Udoka Jephthah."
+    return text
 
 # =========================================================
 # PROFILE & LOGS
@@ -112,7 +130,7 @@ def save_chat(uid, role, text):
         })
 
 # =========================================================
-# AI ENGINE FOR TEXT CHAT
+# AI ENGINE
 # =========================================================
 def ask_ai(uid, text):
     with shelve.open("logs") as db:
@@ -137,13 +155,14 @@ def ask_ai(uid, text):
 
             if hasattr(response, "text") and response.text:
                 reply = response.text.replace("```", "").replace("**", "").replace("__", "").replace("*", "").replace("#", "").replace("`", "")
-                return "\n".join(line.strip() for line in reply.splitlines() if line.strip())
+                reply = "\n".join(line.strip() for line in reply.splitlines() if line.strip())
+                return enforce_identity(reply)
         except Exception:
             continue
     return "AI servers are currently busy. Please try again later."
 
 # =========================================================
-# MENUS & BOT COMMAND HANDLERS
+# MENUS & HANDLERS
 # =========================================================
 def main_menu(uid):
     kb = InlineKeyboardMarkup()
@@ -161,7 +180,7 @@ def premium_menu():
 def start(m):
     uid = m.from_user.id
     get_profile(uid)
-    text = "Welcome back Creator 👑" if uid == OWNER_ID else "Hello, I am Apex, your AI assistant 🤖"
+    text = "Welcome back Creator 👑" if uid == OWNER_ID else "Hello, I am your AI assistant created by Udoka Jephthah 🤖"
     bot.send_message(m.chat.id, text, reply_markup=main_menu(uid))
 
 @bot.callback_query_handler(func=lambda c: True)
@@ -186,10 +205,6 @@ def success(m):
     profile["expiry"] = (datetime.now() + timedelta(days=PREMIUM_DAYS)).strftime("%Y-%m-%d")
     save_profile(uid, profile)
     bot.reply_to(m, "Premium Activated 🎉")
-
-# =========================================================
-# MEDIA & LINK HANDLERS
-# =========================================================
 
 # Social Media Video Link Handler (TikTok, Facebook, Instagram, YouTube)
 @bot.message_handler(func=lambda m: m.text and any(domain in m.text.lower() for domain in ['tiktok.com', 'facebook.com', 'fb.watch', 'instagram.com', 'youtu']))
@@ -231,6 +246,7 @@ def handle_social_video_link(m):
                 )
                 if hasattr(res, "text") and res.text:
                     reply = res.text.replace("*", "").replace("`", "")
+                    reply = enforce_identity(reply)
                     save_chat(uid, "user", f"[Video Link]: {m.text}")
                     save_chat(uid, "bot", reply)
                     bot.reply_to(m, reply)
@@ -332,6 +348,7 @@ def handle_photo(m):
                 )
                 if hasattr(res, "text") and res.text:
                     reply = res.text.replace("*", "").replace("`", "")
+                    reply = enforce_identity(reply)
                     save_chat(uid, "user", "[Photo Sent]")
                     save_chat(uid, "bot", reply)
                     bot.reply_to(m, reply)
@@ -344,7 +361,7 @@ def handle_photo(m):
     except Exception as e:
         bot.reply_to(m, f"Error processing image: {str(e)}")
 
-# Direct Video File Handler (Analyzes visual action + audio track)
+# Direct Video File Handler
 @bot.message_handler(content_types=['video'])
 def handle_video(m):
     uid = m.from_user.id
@@ -374,6 +391,7 @@ def handle_video(m):
                 )
                 if hasattr(res, "text") and res.text:
                     reply = res.text.replace("*", "").replace("`", "")
+                    reply = enforce_identity(reply)
                     save_chat(uid, "user", "[Video Sent]")
                     save_chat(uid, "bot", reply)
                     bot.reply_to(m, reply)
@@ -392,7 +410,6 @@ def handle_video(m):
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
 
-# Voice Note Handler
 @bot.message_handler(content_types=['voice'])
 def voice(m):
     uid = m.from_user.id
@@ -416,10 +433,13 @@ def voice(m):
             res = client.models.generate_content(
                 model=model, 
                 contents=[audio_part],
-                config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT + "\nRespond clearly."
+                )
             )
             if hasattr(res, "text") and res.text:
                 reply = res.text.replace("*", "").replace("`", "")
+                reply = enforce_identity(reply)
                 save_chat(uid, "user", "[Voice Note Sent]")
                 save_chat(uid, "bot", reply)
                 bot.reply_to(m, reply)
@@ -429,9 +449,8 @@ def voice(m):
                 return
         except Exception: 
             continue
-    bot.reply_to(m, "Voice processing error")
+    bot.reply_to(m, "Voice error")
 
-# Text Chat Handler
 @bot.message_handler(func=lambda m: True)
 def chat(m):
     uid = m.from_user.id
@@ -452,7 +471,7 @@ def chat(m):
         save_profile(uid, profile)
 
 # =========================================================
-# WEBHOOK ENDPOINTS & STARTUP
+# WEBHOOK ENDPOINTS & THREADING
 # =========================================================
 @app.route("/", methods=["GET"])
 def home():
@@ -463,21 +482,10 @@ def webhook():
     if request.headers.get("content-type") == "application/json":
         json_string = request.get_data().decode("utf-8")
         update = telebot.types.Update.de_json(json_string)
-        
         threading.Thread(target=bot.process_new_updates, args=([update],)).start()
         return "OK", 200
     return "Forbidden", 403
 
-if WEBHOOK_URL:
-    full_webhook_url = f"{WEBHOOK_URL.rstrip('/')}/{TELEGRAM_TOKEN}"
-    try:
-        bot.remove_webhook()
-        bot.set_webhook(url=full_webhook_url)
-        print(f"Webhook set to: {full_webhook_url}")
-    except Exception as e:
-        print(f"Error setting webhook: {e}")
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-            
