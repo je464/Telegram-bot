@@ -1,7 +1,6 @@
 pyTelegramBotAPI
 google-genai
+yt-dlp
 Pillow
+flask
 python-dotenv
-Flask
-gunicorn
-yt-dlp>=2024.1.0
