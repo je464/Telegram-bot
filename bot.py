@@ -136,15 +136,26 @@ def ask_ai(uid, text):
     with shelve.open("logs") as db:
         history = db.get(str(uid), [])
 
+    # Build validated, alternating conversation history
+    contents = []
+    last_role = None
+    
+    for entry in history[-10:]:
+        role = "user" if entry["role"] == "user" else "model"
+        # Ensure strict alternation between user and model to avoid API 400 rejection
+        if role != last_role:
+            contents.append(types.Content(role=role, parts=[types.Part.from_text(text=str(entry["text"]))]))
+            last_role = role
+
+    # Ensure last element before new prompt isn't another user message
+    if contents and contents[-1].role == "user":
+        contents.pop()
+
+    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=str(text))]))
+
+    # Attempt execution with conversation history
     for model_name in AVAILABLE_MODELS:
         try:
-            contents = []
-            for entry in history[-10:]:
-                role = "user" if entry["role"] == "user" else "model"
-                contents.append(types.Content(role=role, parts=[types.Part.from_text(text=entry["text"])]))
-            
-            contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
-
             response = client.models.generate_content(
                 model=model_name,
                 contents=contents,
@@ -159,6 +170,25 @@ def ask_ai(uid, text):
                 return enforce_identity(reply)
         except Exception:
             continue
+
+    # Fallback retry without history if past chat logs caused the error
+    for model_name in AVAILABLE_MODELS:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=text,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT
+                )
+            )
+
+            if hasattr(response, "text") and response.text:
+                reply = response.text.replace("```", "").replace("**", "").replace("__", "").replace("*", "").replace("#", "").replace("`", "")
+                reply = "\n".join(line.strip() for line in reply.splitlines() if line.strip())
+                return enforce_identity(reply)
+        except Exception:
+            continue
+
     return "AI servers are currently busy. Please try again later."
 
 # =========================================================
@@ -489,3 +519,4 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+    
