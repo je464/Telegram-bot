@@ -136,24 +136,20 @@ def ask_ai(uid, text):
     with shelve.open("logs") as db:
         history = db.get(str(uid), [])
 
-    # Build validated, alternating conversation history
     contents = []
     last_role = None
     
     for entry in history[-10:]:
         role = "user" if entry["role"] == "user" else "model"
-        # Ensure strict alternation between user and model to avoid API 400 rejection
         if role != last_role:
             contents.append(types.Content(role=role, parts=[types.Part.from_text(text=str(entry["text"]))]))
             last_role = role
 
-    # Ensure last element before new prompt isn't another user message
     if contents and contents[-1].role == "user":
         contents.pop()
 
     contents.append(types.Content(role="user", parts=[types.Part.from_text(text=str(text))]))
 
-    # Attempt execution with conversation history
     for model_name in AVAILABLE_MODELS:
         try:
             response = client.models.generate_content(
@@ -171,7 +167,6 @@ def ask_ai(uid, text):
         except Exception:
             continue
 
-    # Fallback retry without history if past chat logs caused the error
     for model_name in AVAILABLE_MODELS:
         try:
             response = client.models.generate_content(
@@ -237,7 +232,7 @@ def success(m):
     bot.reply_to(m, "Premium Activated 🎉")
 
 # Social Media Video Link Handler (TikTok, Facebook, Instagram, YouTube)
-@bot.message_handler(func=lambda m: m.text and any(domain in m.text.lower() for domain in ['tiktok.com', 'facebook.com', 'fb.watch', 'instagram.com', 'youtu']))
+@bot.message_handler(func=lambda m: m.text and any(domain in m.text.lower() for domain in ['tiktok.com', 'facebook.com', 'fb.watch', 'instagram.com', 'youtu', 'vm.tiktok.com']))
 def handle_social_video_link(m):
     uid = m.from_user.id
     profile = get_profile(uid)
@@ -245,25 +240,31 @@ def handle_social_video_link(m):
         bot.reply_to(m, "Limit reached")
         return
 
-    status_msg = bot.reply_to(m, "📥 Downloading video for analysis...")
+    status_msg = bot.reply_to(m, "📥 Fetching and processing video link...")
 
     temp_filename = f"social_{m.message_id}.mp4"
+    
+    # Enhanced yt-dlp configurations to bypass TikTok & Social Media restrictions
     ydl_opts = {
         'outtmpl': temp_filename,
         'format': 'mp4/best[filesize<30M]/best',
         'quiet': True,
         'no_warnings': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
     }
 
     try:
+        # Extract clean URL from potential extra text in message
+        url = [word for word in m.text.split() if "http" in word][0]
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([m.text.strip()])
+            ydl.download([url])
 
         if not os.path.exists(temp_filename):
-            bot.edit_message_text("Could not fetch the video. Make sure the post is public and under 30MB.", m.chat.id, status_msg.message_id)
+            bot.edit_message_text("Unable to download video. Please ensure the link is public and accessible.", m.chat.id, status_msg.message_id)
             return
 
-        bot.edit_message_text("🧠 Analyzing video with Gemini...", m.chat.id, status_msg.message_id)
+        bot.edit_message_text("🧠 Analyzing video contents...", m.chat.id, status_msg.message_id)
         video_file = client.files.upload(file=temp_filename)
         prompt = "Analyze this video in detail, including both visual content and background audio/dialogue."
 
@@ -287,10 +288,10 @@ def handle_social_video_link(m):
             except Exception:
                 continue
 
-        bot.reply_to(m, "Failed to analyze video contents.")
+        bot.edit_message_text("Unable to process the contents of this video link.", m.chat.id, status_msg.message_id)
 
-    except Exception as e:
-        bot.reply_to(m, f"Video link processing error: {str(e)}")
+    except Exception:
+        bot.edit_message_text("Could not process video link. Please verify the URL or try another public video.", m.chat.id, status_msg.message_id)
     finally:
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
@@ -314,19 +315,23 @@ def generate_image_handler(m):
         result = client.models.generate_images(
             model="imagen-3.0-generate-002",
             prompt=prompt,
-            config=types.GenerateImagesConfig(number_of_images=1, aspect_ratio="1:1")
+            config=types.GenerateImagesConfig(
+                number_of_images=1, 
+                aspect_ratio="1:1"
+            )
         )
-        if result.generated_images:
-            bot.send_photo(m.chat.id, photo=result.generated_images[0].image.image_bytes)
+        if result and hasattr(result, 'generated_images') and result.generated_images:
+            image_bytes = result.generated_images[0].image.image_bytes
+            bot.send_photo(m.chat.id, photo=image_bytes)
             save_chat(uid, "user", f"[Generate Image]: {prompt}")
             save_chat(uid, "bot", "[Generated Image Sent]")
             if not is_admin(uid) and not profile["premium"]:
                 profile["count"] += 1
                 save_profile(uid, profile)
         else:
-            bot.reply_to(m, "Could not generate an image for this prompt.")
+            bot.reply_to(m, "Unable to generate image for this prompt. Try rephrasing standard text.")
     except Exception as e:
-        bot.reply_to(m, f"Image generation error: {str(e)}")
+        bot.reply_to(m, "Image generation error. Please try a different description.")
 
 # Photo Handler: Analyzes or Edits Images
 @bot.message_handler(content_types=['photo'])
@@ -512,7 +517,7 @@ def webhook():
     if request.headers.get("content-type") == "application/json":
         json_string = request.get_data().decode("utf-8")
         update = telebot.types.Update.de_json(json_string)
-        threading.Thread(target=bot.process_new_updates, args=([update],)).start()
+                threading.Thread(target=bot.process_new_updates, args=([update],)).start()
         return "OK", 200
     return "Forbidden", 403
 
