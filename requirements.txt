@@ -1,3 +1,4 @@
+gunicorn
 pyTelegramBotAPI
 google-genai
 yt-dlp
