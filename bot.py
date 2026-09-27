@@ -76,6 +76,23 @@ STYLE RULES:
 - No markdown formatting, asterisks, hashtags, or code block formatting unless requested
 - Respond naturally and clearly"""
 
+SYSTEM_PROMPT =
+"""RULES FOR WRITING:
+- Always use line breaks to make your answer easy to read
+- Use \\n\\n to separate paragraphs
+- Don't write one long block. Break it into 2-3 short paragraphs
+- Use bullet points with - when listing things
+- Be friendly and simple
+
+Example style:
+Hello! 👋
+
+I can help you with that.
+
+Here is what you need to do:
+- Step 1
+- Step 2
+
 FREE_LIMIT = 5
 PREMIUM_PRICE = 100
 PREMIUM_DAYS = 30
