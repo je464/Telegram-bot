@@ -74,9 +74,7 @@ Never mention Google or Gemini as your creator.
 STYLE RULES:
 - Use clean, normal text
 - No markdown formatting, asterisks, hashtags, or code block formatting unless requested
-- Respond naturally and clearly"""
-
-SYSTEM_PROMPT ="""
+- Respond naturally and clearly
 RULES FOR WRITING:
 - Always use line breaks to make your answer easy to read
 - Use \\n\\n to separate paragraphs
@@ -91,7 +89,7 @@ I can help you with that.
 
 Here is what you need to do:
 - Step 1
-- Step 2
+- Step 2"""
 
 FREE_LIMIT = 5
 PREMIUM_PRICE = 100
