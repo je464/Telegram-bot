@@ -112,7 +112,7 @@ def save_chat(uid, role, text):
         })
 
 # =========================================================
-# AI ENGINE
+# AI ENGINE FOR TEXT CHAT
 # =========================================================
 def ask_ai(uid, text):
     with shelve.open("logs") as db:
@@ -143,7 +143,7 @@ def ask_ai(uid, text):
     return "AI servers are currently busy. Please try again later."
 
 # =========================================================
-# MENUS & HANDLERS
+# MENUS & BOT COMMAND HANDLERS
 # =========================================================
 def main_menu(uid):
     kb = InlineKeyboardMarkup()
@@ -187,6 +187,10 @@ def success(m):
     save_profile(uid, profile)
     bot.reply_to(m, "Premium Activated 🎉")
 
+# =========================================================
+# MEDIA & LINK HANDLERS
+# =========================================================
+
 # Social Media Video Link Handler (TikTok, Facebook, Instagram, YouTube)
 @bot.message_handler(func=lambda m: m.text and any(domain in m.text.lower() for domain in ['tiktok.com', 'facebook.com', 'fb.watch', 'instagram.com', 'youtu']))
 def handle_social_video_link(m):
@@ -196,13 +200,12 @@ def handle_social_video_link(m):
         bot.reply_to(m, "Limit reached")
         return
 
-    bot.send_chat_action(m.chat.id, "typing")
-    bot.reply_to(m, "📥 Downloading video for analysis...")
+    status_msg = bot.reply_to(m, "📥 Downloading video for analysis...")
 
     temp_filename = f"social_{m.message_id}.mp4"
     ydl_opts = {
         'outtmpl': temp_filename,
-        'format': 'mp4/best[filesize<50M]/best',
+        'format': 'mp4/best[filesize<30M]/best',
         'quiet': True,
         'no_warnings': True,
     }
@@ -212,9 +215,10 @@ def handle_social_video_link(m):
             ydl.download([m.text.strip()])
 
         if not os.path.exists(temp_filename):
-            bot.reply_to(m, "Could not fetch the video from the link. Make sure the post is public.")
+            bot.edit_message_text("Could not fetch the video. Make sure the post is public and under 30MB.", m.chat.id, status_msg.message_id)
             return
 
+        bot.edit_message_text("🧠 Analyzing video with Gemini...", m.chat.id, status_msg.message_id)
         video_file = client.files.upload(file=temp_filename)
         prompt = "Analyze this video in detail, including both visual content and background audio/dialogue."
 
@@ -237,8 +241,10 @@ def handle_social_video_link(m):
             except Exception:
                 continue
 
-    except Exception:
-        bot.reply_to(m, "Failed to download or analyze video. Ensure the link is valid and public.")
+        bot.reply_to(m, "Failed to analyze video contents.")
+
+    except Exception as e:
+        bot.reply_to(m, f"Video link processing error: {str(e)}")
     finally:
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
@@ -273,8 +279,8 @@ def generate_image_handler(m):
                 save_profile(uid, profile)
         else:
             bot.reply_to(m, "Could not generate an image for this prompt.")
-    except Exception:
-        bot.reply_to(m, "Failed to generate image. Please try again later.")
+    except Exception as e:
+        bot.reply_to(m, f"Image generation error: {str(e)}")
 
 # Photo Handler: Analyzes or Edits Images
 @bot.message_handler(content_types=['photo'])
@@ -336,9 +342,9 @@ def handle_photo(m):
             except Exception:
                 continue
     except Exception as e:
-        bot.reply_to(m, f"Error processing image: {e}")
+        bot.reply_to(m, f"Error processing image: {str(e)}")
 
-# Video Handler: Analyzes visual action + audio track
+# Direct Video File Handler (Analyzes visual action + audio track)
 @bot.message_handler(content_types=['video'])
 def handle_video(m):
     uid = m.from_user.id
@@ -347,7 +353,7 @@ def handle_video(m):
         bot.reply_to(m, "Limit reached")
         return
 
-    bot.send_chat_action(m.chat.id, "typing")
+    status_msg = bot.reply_to(m, "📹 Downloading video file...")
     temp_filename = f"video_{m.message_id}.mp4"
     try:
         file_info = bot.get_file(m.video.file_id)
@@ -355,6 +361,7 @@ def handle_video(m):
         with open(temp_filename, "wb") as f:
             f.write(downloaded_file)
 
+        bot.edit_message_text("🧠 Uploading & analyzing video visual and audio...", m.chat.id, status_msg.message_id)
         video_file = client.files.upload(file=temp_filename)
         prompt = m.caption if m.caption else "Analyze this video, including both visual action and audio dialogue."
 
@@ -376,8 +383,11 @@ def handle_video(m):
                     return
             except Exception:
                 continue
+
+        bot.reply_to(m, "Failed to analyze the uploaded video.")
+
     except Exception as e:
-        bot.reply_to(m, f"Error processing video: {e}")
+        bot.reply_to(m, f"Video processing error: {str(e)}")
     finally:
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
@@ -419,7 +429,7 @@ def voice(m):
                 return
         except Exception: 
             continue
-    bot.reply_to(m, "Voice error")
+    bot.reply_to(m, "Voice processing error")
 
 # Text Chat Handler
 @bot.message_handler(func=lambda m: True)
@@ -442,7 +452,7 @@ def chat(m):
         save_profile(uid, profile)
 
 # =========================================================
-# WEBHOOK ENDPOINTS
+# WEBHOOK ENDPOINTS & STARTUP
 # =========================================================
 @app.route("/", methods=["GET"])
 def home():
@@ -458,9 +468,6 @@ def webhook():
         return "OK", 200
     return "Forbidden", 403
 
-# =========================================================
-# AUTO-SET WEBHOOK ON GUNICORN/RENDER STARTUP
-# =========================================================
 if WEBHOOK_URL:
     full_webhook_url = f"{WEBHOOK_URL.rstrip('/')}/{TELEGRAM_TOKEN}"
     try:
@@ -473,4 +480,4 @@ if WEBHOOK_URL:
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-                         
+            
