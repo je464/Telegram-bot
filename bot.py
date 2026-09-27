@@ -76,8 +76,8 @@ STYLE RULES:
 - No markdown formatting, asterisks, hashtags, or code block formatting unless requested
 - Respond naturally and clearly"""
 
-SYSTEM_PROMPT =
-"""RULES FOR WRITING:
+SYSTEM_PROMPT ="""
+RULES FOR WRITING:
 - Always use line breaks to make your answer easy to read
 - Use \\n\\n to separate paragraphs
 - Don't write one long block. Break it into 2-3 short paragraphs
