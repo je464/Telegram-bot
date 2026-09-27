@@ -522,7 +522,8 @@ def chat(m):
     if not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
         bot.reply_to(m, "Limit reached")
         return
-     bot.send_chat_action(m.chat.id, "typing")
+     
+    bot.send_chat_action(m.chat.id, "typing")
     reply = ask_ai(uid, m.text)
     
     save_chat(uid, "user", m.text)
