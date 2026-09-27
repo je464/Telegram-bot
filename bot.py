@@ -517,7 +517,8 @@ def webhook():
     if request.headers.get("content-type") == "application/json":
         json_string = request.get_data().decode("utf-8")
         update = telebot.types.Update.de_json(json_string)
-                threading.Thread(target=bot.process_new_updates, args=([update],)).start()
+                
+        threading.Thread(target=bot.process_new_updates, args=([update],)).start()
         return "OK", 200
     return "Forbidden", 403
 
