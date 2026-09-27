@@ -1,3 +1,4 @@
+import html
 import io
 import os
 import shelve
@@ -72,24 +73,8 @@ Only state that you were created by Jephthah Udoka if the user explicitly asks w
 Never mention Google or Gemini as your creator.
 
 STYLE RULES:
-- Use clean, normal text
-- No markdown formatting, asterisks, hashtags, or code block formatting unless requested
-- Respond naturally and clearly
-RULES FOR WRITING:
-- Always use line breaks to make your answer easy to read
-- Use \\n\\n to separate paragraphs
-- Don't write one long block. Break it into 2-3 short paragraphs
-- Use bullet points with - when listing things
-- Be friendly and simple
-
-Example style:
-Hello! 👋
-
-I can help you with that.
-
-Here is what you need to do:
-- Step 1
-- Step 2"""
+- Use clean, naturally spaced paragraphs
+- Respond naturally and clearly"""
 
 FREE_LIMIT = 5
 PREMIUM_PRICE = 100
@@ -147,6 +132,27 @@ def save_chat(uid, role, text):
 # =========================================================
 # AI ENGINE
 # =========================================================
+def format_ai_response(text: str) -> str:
+    """Formats Markdown code blocks into Telegram HTML code blocks and cleans line spacing."""
+    if "```" in text:
+        parts = text.split("```")
+        formatted = ""
+        for i, part in enumerate(parts):
+            if i % 2 == 1:
+                # Code section: strip optional language identifier and wrap in pre/code tags
+                lines = part.split("\n", 1)
+                code_text = lines[1] if len(lines) > 1 and lines[0].strip().isalnum() else part
+                formatted += f"<pre><code>{html.escape(code_text.strip())}</code></pre>"
+            else:
+                formatted += html.escape(part)
+        text = formatted
+    else:
+        text = html.escape(text)
+
+    # Clean double spacing between paragraphs
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    return "\n\n".join(paragraphs)
+
 def ask_ai(uid, text):
     with shelve.open("logs") as db:
         history = db.get(str(uid), [])
@@ -176,9 +182,8 @@ def ask_ai(uid, text):
             )
 
             if hasattr(response, "text") and response.text:
-                reply = response.text.replace("```", "").replace("**", "").replace("__", "").replace("*", "").replace("#", "").replace("`", "")
-                reply = "\n".join(line.strip() for line in reply.splitlines() if line.strip())
-                return enforce_identity(reply)
+                formatted = format_ai_response(response.text)
+                return enforce_identity(formatted)
         except Exception:
             continue
 
@@ -193,9 +198,8 @@ def ask_ai(uid, text):
             )
 
             if hasattr(response, "text") and response.text:
-                reply = response.text.replace("```", "").replace("**", "").replace("__", "").replace("*", "").replace("#", "").replace("`", "")
-                reply = "\n".join(line.strip() for line in reply.splitlines() if line.strip())
-                return enforce_identity(reply)
+                formatted = format_ai_response(response.text)
+                return enforce_identity(formatted)
         except Exception:
             continue
 
@@ -259,7 +263,6 @@ def handle_social_video_link(m):
 
     temp_filename = f"social_{m.message_id}.mp4"
     
-    # Enhanced yt-dlp configurations to bypass TikTok & Social Media restrictions
     ydl_opts = {
         'outtmpl': temp_filename,
         'format': 'mp4/best[filesize<30M]/best',
@@ -269,7 +272,6 @@ def handle_social_video_link(m):
     }
 
     try:
-        # Extract clean URL from potential extra text in message
         url = [word for word in m.text.split() if "http" in word][0]
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -291,11 +293,14 @@ def handle_social_video_link(m):
                     config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
                 )
                 if hasattr(res, "text") and res.text:
-                    reply = res.text.replace("*", "").replace("`", "")
+                    reply = format_ai_response(res.text)
                     reply = enforce_identity(reply)
                     save_chat(uid, "user", f"[Video Link]: {m.text}")
                     save_chat(uid, "bot", reply)
-                    bot.reply_to(m, reply)
+                    try:
+                        bot.reply_to(m, reply, parse_mode="HTML")
+                    except Exception:
+                        bot.reply_to(m, reply)
                     if not is_admin(uid) and not profile["premium"]:
                         profile["count"] += 1
                         save_profile(uid, profile)
@@ -345,7 +350,7 @@ def generate_image_handler(m):
                 save_profile(uid, profile)
         else:
             bot.reply_to(m, "Unable to generate image for this prompt. Try rephrasing standard text.")
-    except Exception as e:
+    except Exception:
         bot.reply_to(m, "Image generation error. Please try a different description.")
 
 # Photo Handler: Analyzes or Edits Images
@@ -397,11 +402,14 @@ def handle_photo(m):
                     config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
                 )
                 if hasattr(res, "text") and res.text:
-                    reply = res.text.replace("*", "").replace("`", "")
+                    reply = format_ai_response(res.text)
                     reply = enforce_identity(reply)
                     save_chat(uid, "user", "[Photo Sent]")
                     save_chat(uid, "bot", reply)
-                    bot.reply_to(m, reply)
+                    try:
+                        bot.reply_to(m, reply, parse_mode="HTML")
+                    except Exception:
+                        bot.reply_to(m, reply)
                     if not is_admin(uid) and not profile["premium"]:
                         profile["count"] += 1
                         save_profile(uid, profile)
@@ -440,11 +448,14 @@ def handle_video(m):
                     config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
                 )
                 if hasattr(res, "text") and res.text:
-                    reply = res.text.replace("*", "").replace("`", "")
+                    reply = format_ai_response(res.text)
                     reply = enforce_identity(reply)
                     save_chat(uid, "user", "[Video Sent]")
                     save_chat(uid, "bot", reply)
-                    bot.reply_to(m, reply)
+                    try:
+                        bot.reply_to(m, reply, parse_mode="HTML")
+                    except Exception:
+                        bot.reply_to(m, reply)
                     if not is_admin(uid) and not profile["premium"]:
                         profile["count"] += 1
                         save_profile(uid, profile)
@@ -488,11 +499,14 @@ def voice(m):
                 )
             )
             if hasattr(res, "text") and res.text:
-                reply = res.text.replace("*", "").replace("`", "")
+                reply = format_ai_response(res.text)
                 reply = enforce_identity(reply)
                 save_chat(uid, "user", "[Voice Note Sent]")
                 save_chat(uid, "bot", reply)
-                bot.reply_to(m, reply)
+                try:
+                    bot.reply_to(m, reply, parse_mode="HTML")
+                except Exception:
+                    bot.reply_to(m, reply)
                 if not is_admin(uid) and not profile["premium"]:
                     profile["count"] += 1
                     save_profile(uid, profile)
@@ -508,13 +522,16 @@ def chat(m):
     if not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
         bot.reply_to(m, "Limit reached")
         return
-    
-    bot.send_chat_action(m.chat.id, "typing")
+     bot.send_chat_action(m.chat.id, "typing")
     reply = ask_ai(uid, m.text)
     
     save_chat(uid, "user", m.text)
     save_chat(uid, "bot", reply)
-    bot.reply_to(m, reply)
+    
+    try:
+        bot.reply_to(m, reply, parse_mode="HTML")
+    except Exception:
+        bot.reply_to(m, reply)
     
     if not is_admin(uid) and not profile["premium"]:
         profile["count"] += 1
@@ -532,7 +549,6 @@ def webhook():
     if request.headers.get("content-type") == "application/json":
         json_string = request.get_data().decode("utf-8")
         update = telebot.types.Update.de_json(json_string)
-                
         threading.Thread(target=bot.process_new_updates, args=([update],)).start()
         return "OK", 200
     return "Forbidden", 403
@@ -540,4 +556,5 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-    
+           
+   
