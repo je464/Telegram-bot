@@ -519,6 +519,36 @@ def voice(m):
                 if not is_admin(uid) and not profile["premium"]:
                     profile["count"] += 1
                     save_profile(uid, profile)
+                return
+        except Exception: 
+            continue
+    bot.reply_to(m, "Voice error")
+
+
+# 👇 PASTE THE FIXED CHAT FUNCTION HERE (REPLACING YOUR OLD INCOMPLETE ONE) 👇
+@bot.message_handler(func=lambda m: True)
+def chat(m):
+    uid = m.from_user.id
+    profile = get_profile(uid)
+    if not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
+        bot.reply_to(m, "Limit reached")
+        return
+    
+    bot.send_chat_action(m.chat.id, "typing")
+    reply = ask_ai(uid, m.text)
+    
+    save_chat(uid, "user", m.text)
+    save_chat(uid, "bot", reply)
+    
+    try:
+        bot.reply_to(m, reply, parse_mode="HTML")
+    except Exception:
+        bot.reply_to(m, reply)
+    
+    if not is_admin(uid) and not profile["premium"]:
+        profile["count"] += 1
+        save_profile(uid, profile)
+
 
 # =========================================================
 # WEBHOOK ENDPOINTS & THREADING
@@ -539,3 +569,5 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+    
+# =
