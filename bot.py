@@ -208,7 +208,6 @@ def handle_social_video_link(m):
     }
 
     try:
-        # Download video via yt-dlp
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([m.text.strip()])
 
@@ -216,7 +215,6 @@ def handle_social_video_link(m):
             bot.reply_to(m, "Could not fetch the video from the link. Make sure the post is public.")
             return
 
-        # Upload video to Gemini Files API
         video_file = client.files.upload(file=temp_filename)
         prompt = "Analyze this video in detail, including both visual content and background audio/dialogue."
 
@@ -239,13 +237,46 @@ def handle_social_video_link(m):
             except Exception:
                 continue
 
-    except Exception as e:
+    except Exception:
         bot.reply_to(m, "Failed to download or analyze video. Ensure the link is valid and public.")
     finally:
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
 
-# Photo Handler: Analyzes images sent by user
+# Image Generation Handler (/image, /draw, /generate)
+@bot.message_handler(commands=['image', 'draw', 'generate'])
+def generate_image_handler(m):
+    uid = m.from_user.id
+    profile = get_profile(uid)
+    if not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
+        bot.reply_to(m, "Limit reached")
+        return
+
+    prompt = m.text.partition(' ')[2].strip()
+    if not prompt:
+        bot.reply_to(m, "Please provide a description! Example: /draw a cute robot surfing")
+        return
+
+    bot.send_chat_action(m.chat.id, "upload_photo")
+    try:
+        result = client.models.generate_images(
+            model="imagen-3.0-generate-002",
+            prompt=prompt,
+            config=types.GenerateImagesConfig(number_of_images=1, aspect_ratio="1:1")
+        )
+        if result.generated_images:
+            bot.send_photo(m.chat.id, photo=result.generated_images[0].image.image_bytes)
+            save_chat(uid, "user", f"[Generate Image]: {prompt}")
+            save_chat(uid, "bot", "[Generated Image Sent]")
+            if not is_admin(uid) and not profile["premium"]:
+                profile["count"] += 1
+                save_profile(uid, profile)
+        else:
+            bot.reply_to(m, "Could not generate an image for this prompt.")
+    except Exception:
+        bot.reply_to(m, "Failed to generate image. Please try again later.")
+
+# Photo Handler: Analyzes or Edits Images
 @bot.message_handler(content_types=['photo'])
 def handle_photo(m):
     uid = m.from_user.id
@@ -254,14 +285,38 @@ def handle_photo(m):
         bot.reply_to(m, "Limit reached")
         return
 
-    bot.send_chat_action(m.chat.id, "typing")
+    bot.send_chat_action(m.chat.id, "upload_photo" if (m.caption and m.caption.lower().startswith('/edit')) else "typing")
     try:
         file_info = bot.get_file(m.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         image = Image.open(io.BytesIO(downloaded_file))
         
-        prompt = m.caption if m.caption else "Describe this image in detail."
+        # Image Editing Logic
+        if m.caption and m.caption.lower().startswith('/edit'):
+            edit_prompt = m.caption.partition(' ')[2].strip()
+            if not edit_prompt:
+                bot.reply_to(m, "Provide editing instructions in caption. Example: /edit add sunglasses to the cat")
+                return
+            
+            res = client.models.generate_content(
+                model="gemini-2.5-flash-image",
+                contents=[image, edit_prompt],
+                config=types.GenerateContentConfig(response_modalities=["IMAGE"])
+            )
+            for part in res.candidates[0].content.parts:
+                if hasattr(part, "inline_data") and part.inline_data:
+                    bot.send_photo(m.chat.id, photo=part.inline_data.data)
+                    save_chat(uid, "user", f"[Edit Photo]: {edit_prompt}")
+                    save_chat(uid, "bot", "[Edited Image Sent]")
+                    if not is_admin(uid) and not profile["premium"]:
+                        profile["count"] += 1
+                        save_profile(uid, profile)
+                    return
+            bot.reply_to(m, "Could not edit this image.")
+            return
 
+        # Photo Analysis Logic (Default)
+        prompt = m.caption if m.caption else "Describe this image in detail."
         for model in AVAILABLE_MODELS:
             try:
                 res = client.models.generate_content(
@@ -399,7 +454,6 @@ def webhook():
         json_string = request.get_data().decode("utf-8")
         update = telebot.types.Update.de_json(json_string)
         
-        # Offload update processing to a background thread to prevent latency/retries
         threading.Thread(target=bot.process_new_updates, args=([update],)).start()
         return "OK", 200
     return "Forbidden", 403
@@ -419,4 +473,4 @@ if WEBHOOK_URL:
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-    
+                         
