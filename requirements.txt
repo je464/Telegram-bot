@@ -4,4 +4,4 @@ Pillow
 python-dotenv
 Flask
 gunicorn
-yt-dlp
+yt-dlp>=2024.1.0
