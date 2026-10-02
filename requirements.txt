@@ -1,7 +1,7 @@
-gunicorn
+gtts
 pyTelegramBotAPI
 google-genai
-yt-dlp
-Pillow
-flask
 python-dotenv
+Flask
+Pillow
+yt-dlp
