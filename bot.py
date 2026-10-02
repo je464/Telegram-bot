@@ -57,11 +57,12 @@ def is_admin(uid):
     return uid in ADMIN_IDS
 
 AVAILABLE_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-pro",
     "gemini-3.5-flash",
     "gemini-3.1-pro",
-    "gemini-3.1-flash-lite",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash"
+    "gemini-2.0-pro"
 ]
 
 # =========================================================
@@ -216,7 +217,7 @@ def ask_ai(uid, text):
     return "AI servers are currently busy. Please try again later."
 
 def ask_ai_stream(uid, text, chat_id, message_id):
-    """Displays a spinning animation while waiting for response, then streams AI output."""
+    """Fast streaming function without delay-inducing animations."""
     with shelve.open("logs") as db:
         history = db.get(str(uid), [])
 
@@ -236,9 +237,6 @@ def ask_ai_stream(uid, text, chat_id, message_id):
 
     accumulated_text = ""
     last_update_time = time.time()
-    
-    spinner_frames = ["⏳ Thinking.", "⌛ Thinking..", "⏳ Thinking..."]
-    frame_idx = 0
 
     for model_name in AVAILABLE_MODELS:
         try:
@@ -254,7 +252,7 @@ def ask_ai_stream(uid, text, chat_id, message_id):
                 if chunk.text:
                     accumulated_text += chunk.text
                     
-                    if time.time() - last_update_time > 1.3:
+                    if time.time() - last_update_time > 1.2:
                         formatted = format_ai_response(accumulated_text)
                         formatted = enforce_identity(formatted)
                         try:
@@ -263,18 +261,6 @@ def ask_ai_stream(uid, text, chat_id, message_id):
                                 message_id=message_id,
                                 text=formatted + " ▌",
                                 parse_mode="HTML"
-                            )
-                        except Exception:
-                            pass
-                        last_update_time = time.time()
-                else:
-                    if time.time() - last_update_time > 1.3:
-                        frame_idx = (frame_idx + 1) % len(spinner_frames)
-                        try:
-                            bot.edit_message_text(
-                                chat_id=chat_id,
-                                message_id=message_id,
-                                text=spinner_frames[frame_idx]
                             )
                         except Exception:
                             pass
@@ -633,7 +619,7 @@ def chat(m):
         return
     
     bot.send_chat_action(m.chat.id, "typing")
-    status_msg = bot.reply_to(m, "⏳ Thinking.")
+    status_msg = bot.reply_to(m, "✍️")
     
     reply = ask_ai_stream(uid, m.text, m.chat.id, status_msg.message_id)
     
