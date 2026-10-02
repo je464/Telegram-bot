@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
 from flask import Flask, request
 from PIL import Image
+from gtts import gTTS
 
 import telebot
 from telebot.types import (
@@ -37,7 +38,6 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
 client = genai.Client(api_key=GEMINI_API_KEY)
 app = Flask(__name__)
 
-# Set Webhook immediately on script load
 if WEBHOOK_URL:
     full_webhook_url = f"{WEBHOOK_URL.rstrip('/')}/{TELEGRAM_TOKEN}"
     try:
@@ -56,13 +56,13 @@ ADMIN_IDS = [7005552426, 7056087460]
 def is_admin(uid):
     return uid in ADMIN_IDS
 
+# Fast models listed first for maximum execution speed
 AVAILABLE_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
     "gemini-2.5-pro",
     "gemini-3.5-flash",
-    "gemini-3.1-pro",
-    "gemini-2.0-pro"
+    "gemini-3.1-pro"
 ]
 
 # =========================================================
@@ -137,7 +137,6 @@ def save_chat(uid, role, text):
 # AI ENGINE
 # =========================================================
 def process_markdown_text(text: str) -> str:
-    """Converts markdown headers, bolding, and bullet styling to HTML tags."""
     text = re.sub(r'^#{1,6}\s*(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
     text = html.escape(text)
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
@@ -146,7 +145,6 @@ def process_markdown_text(text: str) -> str:
     return text
 
 def format_ai_response(text: str) -> str:
-    """Formats Markdown code blocks into Telegram HTML code blocks and cleans line spacing."""
     if "```" in text:
         parts = text.split("```")
         formatted = ""
@@ -198,26 +196,10 @@ def ask_ai(uid, text):
         except Exception:
             continue
 
-    for model_name in AVAILABLE_MODELS:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=text,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT
-                )
-            )
-
-            if hasattr(response, "text") and response.text:
-                formatted = format_ai_response(response.text)
-                return enforce_identity(formatted)
-        except Exception:
-            continue
-
     return "AI servers are currently busy. Please try again later."
 
 def ask_ai_stream(uid, text, chat_id, message_id):
-    """Fast streaming function without delay-inducing animations."""
+    """Ultra-fast streaming without loading animations or emojis."""
     with shelve.open("logs") as db:
         history = db.get(str(uid), [])
 
@@ -252,14 +234,15 @@ def ask_ai_stream(uid, text, chat_id, message_id):
                 if chunk.text:
                     accumulated_text += chunk.text
                     
-                    if time.time() - last_update_time > 1.2:
+                    # Direct edit without intermediate loading text
+                    if time.time() - last_update_time > 1.0:
                         formatted = format_ai_response(accumulated_text)
                         formatted = enforce_identity(formatted)
                         try:
                             bot.edit_message_text(
                                 chat_id=chat_id,
                                 message_id=message_id,
-                                text=formatted + " ▌",
+                                text=formatted,
                                 parse_mode="HTML"
                             )
                         except Exception:
@@ -333,7 +316,47 @@ def success(m):
     save_profile(uid, profile)
     bot.reply_to(m, "Premium Activated 🎉")
 
-# Social Media Video Link Handler (TikTok, Facebook, Instagram, YouTube)
+# Voice / Talk Command: AI speaks response back as an audio file
+@bot.message_handler(commands=['talk', 'voice', 'speak'])
+def speak_handler(m):
+    uid = m.from_user.id
+    profile = get_profile(uid)
+    if not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
+        bot.reply_to(m, "Limit reached")
+        return
+
+    user_text = m.text.partition(' ')[2].strip()
+    if not user_text:
+        bot.reply_to(m, "Provide text! Example: /talk Hello Apex")
+        return
+
+    bot.send_chat_action(m.chat.id, "record_voice")
+
+    reply_text = ask_ai(uid, user_text)
+    temp_audio = f"voice_{m.message_id}.ogg"
+
+    try:
+        # Convert AI response text into speech audio
+        clean_text = re.sub(r'<[^>]+>', '', reply_text)
+        tts = gTTS(text=clean_text, lang='en')
+        tts.save(temp_audio)
+
+        with open(temp_audio, 'rb') as v_file:
+            bot.send_voice(m.chat.id, voice=v_file, reply_to_message_id=m.message_id)
+
+        save_chat(uid, "user", f"[Voice Request]: {user_text}")
+        save_chat(uid, "bot", f"[Voice Reply]: {clean_text}")
+
+        if not is_admin(uid) and not profile["premium"]:
+            profile["count"] += 1
+            save_profile(uid, profile)
+    except Exception as e:
+        bot.reply_to(m, f"Voice error: {str(e)}")
+    finally:
+        if os.path.exists(temp_audio):
+            os.remove(temp_audio)
+
+# Social Media Video Link Handler
 @bot.message_handler(func=lambda m: m.text and any(domain in m.text.lower() for domain in ['tiktok.com', 'facebook.com', 'fb.watch', 'instagram.com', 'youtu', 'vm.tiktok.com']))
 def handle_social_video_link(m):
     uid = m.from_user.id
@@ -342,8 +365,7 @@ def handle_social_video_link(m):
         bot.reply_to(m, "Limit reached")
         return
 
-    status_msg = bot.reply_to(m, "📥 Fetching and processing video link...")
-
+    status_msg = bot.reply_to(m, "Processing video...")
     temp_filename = f"social_{m.message_id}.mp4"
     
     ydl_opts = {
@@ -356,15 +378,13 @@ def handle_social_video_link(m):
 
     try:
         url = [word for word in m.text.split() if "http" in word][0]
-        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
         if not os.path.exists(temp_filename):
-            bot.edit_message_text("Unable to download video. Please ensure the link is public and accessible.", m.chat.id, status_msg.message_id)
+            bot.edit_message_text("Unable to download video.", m.chat.id, status_msg.message_id)
             return
 
-        bot.edit_message_text("🧠 Analyzing video contents...", m.chat.id, status_msg.message_id)
         video_file = client.files.upload(file=temp_filename)
         prompt = "Analyze this video in detail, including both visual content and background audio/dialogue."
 
@@ -397,10 +417,10 @@ def handle_social_video_link(m):
             except Exception:
                 continue
 
-        bot.edit_message_text("Unable to process the contents of this video link.", m.chat.id, status_msg.message_id)
+        bot.edit_message_text("Unable to process video.", m.chat.id, status_msg.message_id)
 
     except Exception:
-        bot.edit_message_text("Could not process video link. Please verify the URL or try another public video.", m.chat.id, status_msg.message_id)
+        bot.edit_message_text("Could not process video link.", m.chat.id, status_msg.message_id)
     finally:
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
@@ -438,11 +458,11 @@ def generate_image_handler(m):
                 profile["count"] += 1
                 save_profile(uid, profile)
         else:
-            bot.reply_to(m, "Unable to generate image for this prompt. Try rephrasing standard text.")
+            bot.reply_to(m, "Unable to generate image.")
     except Exception:
-        bot.reply_to(m, "Image generation error. Please try a different description.")
+        bot.reply_to(m, "Image generation error.")
 
-# Photo Handler: Analyzes or Edits Images
+# Photo Handler
 @bot.message_handler(content_types=['photo'])
 def handle_photo(m):
     uid = m.from_user.id
@@ -457,11 +477,10 @@ def handle_photo(m):
         downloaded_file = bot.download_file(file_info.file_path)
         image = Image.open(io.BytesIO(downloaded_file))
         
-        # Image Editing Logic
         if m.caption and m.caption.lower().startswith('/edit'):
             edit_prompt = m.caption.partition(' ')[2].strip()
             if not edit_prompt:
-                bot.reply_to(m, "Provide editing instructions in caption. Example: /edit add sunglasses to the cat")
+                bot.reply_to(m, "Provide editing instructions in caption.")
                 return
             
             res = client.models.generate_content(
@@ -481,7 +500,6 @@ def handle_photo(m):
             bot.reply_to(m, "Could not edit this image.")
             return
 
-        # Photo Analysis Logic (Default)
         prompt = m.caption if m.caption else "Describe this image in detail."
         for model in AVAILABLE_MODELS:
             try:
@@ -517,7 +535,7 @@ def handle_video(m):
         bot.reply_to(m, "Limit reached")
         return
 
-    status_msg = bot.reply_to(m, "📹 Downloading video file...")
+    status_msg = bot.reply_to(m, "Downloading video...")
     temp_filename = f"video_{m.message_id}.mp4"
     try:
         file_info = bot.get_file(m.video.file_id)
@@ -525,9 +543,8 @@ def handle_video(m):
         with open(temp_filename, "wb") as f:
             f.write(downloaded_file)
 
-        bot.edit_message_text("🧠 Uploading & analyzing video visual and audio...", m.chat.id, status_msg.message_id)
         video_file = client.files.upload(file=temp_filename)
-        prompt = m.caption if m.caption else "Analyze this video, including both visual action and audio dialogue."
+        prompt = m.caption if m.caption else "Analyze this video."
 
         for model in AVAILABLE_MODELS:
             try:
@@ -558,14 +575,15 @@ def handle_video(m):
             except Exception:
                 continue
 
-        bot.reply_to(m, "Failed to analyze the uploaded video.")
+        bot.reply_to(m, "Failed to analyze video.")
 
     except Exception as e:
-        bot.reply_to(m, f"Video processing error: {str(e)}")
+        bot.reply_to(m, f"Video error: {str(e)}")
     finally:
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
 
+# Voice Note Handler: User sends voice, AI responds with Voice back
 @bot.message_handler(content_types=['voice'])
 def voice(m):
     uid = m.from_user.id
@@ -590,26 +608,37 @@ def voice(m):
                 model=model, 
                 contents=[audio_part],
                 config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT + "\nRespond clearly."
+                    system_instruction=SYSTEM_PROMPT + "\nRespond concisely."
                 )
             )
             if hasattr(res, "text") and res.text:
                 reply = format_ai_response(res.text)
                 reply = enforce_identity(reply)
+                
+                # Convert AI response text into audio voice reply
+                clean_text = re.sub(r'<[^>]+>', '', reply)
+                temp_audio = f"voice_reply_{m.message_id}.ogg"
+                tts = gTTS(text=clean_text, lang='en')
+                tts.save(temp_audio)
+
+                with open(temp_audio, 'rb') as v_file:
+                    bot.send_voice(m.chat.id, voice=v_file, reply_to_message_id=m.message_id)
+
+                if os.path.exists(temp_audio):
+                    os.remove(temp_audio)
+
                 save_chat(uid, "user", "[Voice Note Sent]")
                 save_chat(uid, "bot", reply)
-                try:
-                    bot.reply_to(m, reply, parse_mode="HTML")
-                except Exception:
-                    bot.reply_to(m, reply)
+
                 if not is_admin(uid) and not profile["premium"]:
                     profile["count"] += 1
                     save_profile(uid, profile)
                 return
         except Exception: 
             continue
-    bot.reply_to(m, "Voice error")
+    bot.reply_to(m, "Voice processing error")
 
+# Main Chat Handler: Fast streaming
 @bot.message_handler(func=lambda m: True)
 def chat(m):
     uid = m.from_user.id
@@ -619,7 +648,7 @@ def chat(m):
         return
     
     bot.send_chat_action(m.chat.id, "typing")
-    status_msg = bot.reply_to(m, "✍️")
+    status_msg = bot.reply_to(m, ".")
     
     reply = ask_ai_stream(uid, m.text, m.chat.id, status_msg.message_id)
     
