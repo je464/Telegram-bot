@@ -56,7 +56,6 @@ ADMIN_IDS = [7005552426, 7056087460]
 def is_admin(uid):
     return uid in ADMIN_IDS
 
-# Fast models listed first for maximum execution speed
 AVAILABLE_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
@@ -68,27 +67,16 @@ AVAILABLE_MODELS = [
 # =========================================================
 # SYSTEM PROMPT & CONSTANTS
 # =========================================================
-SYSTEM_PROMPT = """You are Apex, a general-purpose AI assistant like ChatGPT created and developed by Jephthah Udoka.
+SYSTEM_PROMPT = """You are Apex, a general-purpose AI assistant developed by Jephthah Udoka.
 
 CRITICAL IDENTITY RULE:
-Only state that you were created by Jephthah Udoka if the user explicitly asks who created you, who made you, or who your developer is. Otherwise, reply directly to the user's prompt without adding self-introductions, signatures, or disclosures at the end of your response.
-
-Never mention Google or Gemini as your creator.
-
-FORMATTING RULES:
-- Never use markdown headings like #, ##, or ###.
-- Use bold text for emphasis or section headings.
-- Use clean, naturally spaced paragraphs."""
+- ONLY state that you were created or developed by Jephthah Udoka if the user explicitly asks who created you, who made you, or who your developer is.
+- Never state or mention that you were made or created by Google.
+- For all other standard prompts, answer directly, helpfully, and concisely without adding any intro or outro introductions."""
 
 FREE_LIMIT = 5
 PREMIUM_PRICE = 100
 PREMIUM_DAYS = 30
-
-def enforce_identity(text: str) -> str:
-    lower = text.lower()
-    if "google" in lower or "gemini" in lower:
-        return "I was created by Udoka Jephthah."
-    return text
 
 # =========================================================
 # PROFILE & LOGS
@@ -191,85 +179,11 @@ def ask_ai(uid, text):
             )
 
             if hasattr(response, "text") and response.text:
-                formatted = format_ai_response(response.text)
-                return enforce_identity(formatted)
+                return format_ai_response(response.text)
         except Exception:
             continue
 
     return "AI servers are currently busy. Please try again later."
-
-def ask_ai_stream(uid, text, chat_id, message_id):
-    """Ultra-fast streaming without loading animations or emojis."""
-    with shelve.open("logs") as db:
-        history = db.get(str(uid), [])
-
-    contents = []
-    last_role = None
-    
-    for entry in history[-10:]:
-        role = "user" if entry["role"] == "user" else "model"
-        if role != last_role:
-            contents.append(types.Content(role=role, parts=[types.Part.from_text(text=str(entry["text"]))]))
-            last_role = role
-
-    if contents and contents[-1].role == "user":
-        contents.pop()
-
-    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=str(text))]))
-
-    accumulated_text = ""
-    last_update_time = time.time()
-
-    for model_name in AVAILABLE_MODELS:
-        try:
-            response_stream = client.models.generate_content_stream(
-                model=model_name,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT
-                )
-            )
-
-            for chunk in response_stream:
-                if chunk.text:
-                    accumulated_text += chunk.text
-                    
-                    # Direct edit without intermediate loading text
-                    if time.time() - last_update_time > 1.0:
-                        formatted = format_ai_response(accumulated_text)
-                        formatted = enforce_identity(formatted)
-                        try:
-                            bot.edit_message_text(
-                                chat_id=chat_id,
-                                message_id=message_id,
-                                text=formatted,
-                                parse_mode="HTML"
-                            )
-                        except Exception:
-                            pass
-                        last_update_time = time.time()
-
-            final_formatted = format_ai_response(accumulated_text)
-            final_formatted = enforce_identity(final_formatted)
-            try:
-                bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=final_formatted,
-                    parse_mode="HTML"
-                )
-            except Exception:
-                bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=final_formatted
-                )
-            return final_formatted
-
-        except Exception:
-            continue
-
-    return ask_ai(uid, text)
 
 # =========================================================
 # MENUS & HANDLERS
@@ -316,7 +230,7 @@ def success(m):
     save_profile(uid, profile)
     bot.reply_to(m, "Premium Activated 🎉")
 
-# Voice / Talk Command: AI speaks response back as an audio file
+# Voice command handler
 @bot.message_handler(commands=['talk', 'voice', 'speak'])
 def speak_handler(m):
     uid = m.from_user.id
@@ -336,7 +250,6 @@ def speak_handler(m):
     temp_audio = f"voice_{m.message_id}.ogg"
 
     try:
-        # Convert AI response text into speech audio
         clean_text = re.sub(r'<[^>]+>', '', reply_text)
         tts = gTTS(text=clean_text, lang='en')
         tts.save(temp_audio)
@@ -356,289 +269,7 @@ def speak_handler(m):
         if os.path.exists(temp_audio):
             os.remove(temp_audio)
 
-# Social Media Video Link Handler
-@bot.message_handler(func=lambda m: m.text and any(domain in m.text.lower() for domain in ['tiktok.com', 'facebook.com', 'fb.watch', 'instagram.com', 'youtu', 'vm.tiktok.com']))
-def handle_social_video_link(m):
-    uid = m.from_user.id
-    profile = get_profile(uid)
-    if not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
-        bot.reply_to(m, "Limit reached")
-        return
-
-    status_msg = bot.reply_to(m, "Processing video...")
-    temp_filename = f"social_{m.message_id}.mp4"
-    
-    ydl_opts = {
-        'outtmpl': temp_filename,
-        'format': 'mp4/best[filesize<30M]/best',
-        'quiet': True,
-        'no_warnings': True,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-    }
-
-    try:
-        url = [word for word in m.text.split() if "http" in word][0]
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        if not os.path.exists(temp_filename):
-            bot.edit_message_text("Unable to download video.", m.chat.id, status_msg.message_id)
-            return
-
-        video_file = client.files.upload(file=temp_filename)
-        prompt = "Analyze this video in detail, including both visual content and background audio/dialogue."
-
-        for model in AVAILABLE_MODELS:
-            try:
-                res = client.models.generate_content(
-                    model=model,
-                    contents=[video_file, prompt],
-                    config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
-                )
-                if hasattr(res, "text") and res.text:
-                    reply = format_ai_response(res.text)
-                    reply = enforce_identity(reply)
-                    save_chat(uid, "user", f"[Video Link]: {m.text}")
-                    save_chat(uid, "bot", reply)
-
-                    try:
-                        bot.delete_message(m.chat.id, status_msg.message_id)
-                    except Exception:
-                        pass
-
-                    try:
-                        bot.reply_to(m, reply, parse_mode="HTML")
-                    except Exception:
-                        bot.reply_to(m, reply)
-                    if not is_admin(uid) and not profile["premium"]:
-                        profile["count"] += 1
-                        save_profile(uid, profile)
-                    return
-            except Exception:
-                continue
-
-        bot.edit_message_text("Unable to process video.", m.chat.id, status_msg.message_id)
-
-    except Exception:
-        bot.edit_message_text("Could not process video link.", m.chat.id, status_msg.message_id)
-    finally:
-        if os.path.exists(temp_filename):
-            os.remove(temp_filename)
-
-# Image Generation Handler (/image, /draw, /generate)
-@bot.message_handler(commands=['image', 'draw', 'generate'])
-def generate_image_handler(m):
-    uid = m.from_user.id
-    profile = get_profile(uid)
-    if not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
-        bot.reply_to(m, "Limit reached")
-        return
-
-    prompt = m.text.partition(' ')[2].strip()
-    if not prompt:
-        bot.reply_to(m, "Please provide a description! Example: /draw a cute robot surfing")
-        return
-
-    bot.send_chat_action(m.chat.id, "upload_photo")
-    try:
-        result = client.models.generate_images(
-            model="imagen-3.0-generate-002",
-            prompt=prompt,
-            config=types.GenerateImagesConfig(
-                number_of_images=1, 
-                aspect_ratio="1:1"
-            )
-        )
-        if result and hasattr(result, 'generated_images') and result.generated_images:
-            image_bytes = result.generated_images[0].image.image_bytes
-            bot.send_photo(m.chat.id, photo=image_bytes)
-            save_chat(uid, "user", f"[Generate Image]: {prompt}")
-            save_chat(uid, "bot", "[Generated Image Sent]")
-            if not is_admin(uid) and not profile["premium"]:
-                profile["count"] += 1
-                save_profile(uid, profile)
-        else:
-            bot.reply_to(m, "Unable to generate image.")
-    except Exception:
-        bot.reply_to(m, "Image generation error.")
-
-# Photo Handler
-@bot.message_handler(content_types=['photo'])
-def handle_photo(m):
-    uid = m.from_user.id
-    profile = get_profile(uid)
-    if not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
-        bot.reply_to(m, "Limit reached")
-        return
-
-    bot.send_chat_action(m.chat.id, "upload_photo" if (m.caption and m.caption.lower().startswith('/edit')) else "typing")
-    try:
-        file_info = bot.get_file(m.photo[-1].file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        image = Image.open(io.BytesIO(downloaded_file))
-        
-        if m.caption and m.caption.lower().startswith('/edit'):
-            edit_prompt = m.caption.partition(' ')[2].strip()
-            if not edit_prompt:
-                bot.reply_to(m, "Provide editing instructions in caption.")
-                return
-            
-            res = client.models.generate_content(
-                model="gemini-2.5-flash-image",
-                contents=[image, edit_prompt],
-                config=types.GenerateContentConfig(response_modalities=["IMAGE"])
-            )
-            for part in res.candidates[0].content.parts:
-                if hasattr(part, "inline_data") and part.inline_data:
-                    bot.send_photo(m.chat.id, photo=part.inline_data.data)
-                    save_chat(uid, "user", f"[Edit Photo]: {edit_prompt}")
-                    save_chat(uid, "bot", "[Edited Image Sent]")
-                    if not is_admin(uid) and not profile["premium"]:
-                        profile["count"] += 1
-                        save_profile(uid, profile)
-                    return
-            bot.reply_to(m, "Could not edit this image.")
-            return
-
-        prompt = m.caption if m.caption else "Describe this image in detail."
-        for model in AVAILABLE_MODELS:
-            try:
-                res = client.models.generate_content(
-                    model=model,
-                    contents=[image, prompt],
-                    config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
-                )
-                if hasattr(res, "text") and res.text:
-                    reply = format_ai_response(res.text)
-                    reply = enforce_identity(reply)
-                    save_chat(uid, "user", "[Photo Sent]")
-                    save_chat(uid, "bot", reply)
-                    try:
-                        bot.reply_to(m, reply, parse_mode="HTML")
-                    except Exception:
-                        bot.reply_to(m, reply)
-                    if not is_admin(uid) and not profile["premium"]:
-                        profile["count"] += 1
-                        save_profile(uid, profile)
-                    return
-            except Exception:
-                continue
-    except Exception as e:
-        bot.reply_to(m, f"Error processing image: {str(e)}")
-
-# Direct Video File Handler
-@bot.message_handler(content_types=['video'])
-def handle_video(m):
-    uid = m.from_user.id
-    profile = get_profile(uid)
-    if not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
-        bot.reply_to(m, "Limit reached")
-        return
-
-    status_msg = bot.reply_to(m, "Downloading video...")
-    temp_filename = f"video_{m.message_id}.mp4"
-    try:
-        file_info = bot.get_file(m.video.file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        with open(temp_filename, "wb") as f:
-            f.write(downloaded_file)
-
-        video_file = client.files.upload(file=temp_filename)
-        prompt = m.caption if m.caption else "Analyze this video."
-
-        for model in AVAILABLE_MODELS:
-            try:
-                res = client.models.generate_content(
-                    model=model,
-                    contents=[video_file, prompt],
-                    config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
-                )
-                if hasattr(res, "text") and res.text:
-                    reply = format_ai_response(res.text)
-                    reply = enforce_identity(reply)
-                    save_chat(uid, "user", "[Video Sent]")
-                    save_chat(uid, "bot", reply)
-
-                    try:
-                        bot.delete_message(m.chat.id, status_msg.message_id)
-                    except Exception:
-                        pass
-
-                    try:
-                        bot.reply_to(m, reply, parse_mode="HTML")
-                    except Exception:
-                        bot.reply_to(m, reply)
-                    if not is_admin(uid) and not profile["premium"]:
-                        profile["count"] += 1
-                        save_profile(uid, profile)
-                    return
-            except Exception:
-                continue
-
-        bot.reply_to(m, "Failed to analyze video.")
-
-    except Exception as e:
-        bot.reply_to(m, f"Video error: {str(e)}")
-    finally:
-        if os.path.exists(temp_filename):
-            os.remove(temp_filename)
-
-# Voice Note Handler: User sends voice, AI responds with Voice back
-@bot.message_handler(content_types=['voice'])
-def voice(m):
-    uid = m.from_user.id
-    profile = get_profile(uid)
-    if not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
-        bot.reply_to(m, "Limit reached")
-        return
-    bot.send_chat_action(m.chat.id, "record_voice")
-    
-    try:
-        file = bot.get_file(m.voice.file_id)
-        data = bot.download_file(file.file_path)
-    except Exception:
-        bot.reply_to(m, "Failed to download voice note.")
-        return
-
-    audio_part = types.Part.from_bytes(data=data, mime_type="audio/ogg")
-    
-    for model in AVAILABLE_MODELS:
-        try:
-            res = client.models.generate_content(
-                model=model, 
-                contents=[audio_part],
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT + "\nRespond concisely."
-                )
-            )
-            if hasattr(res, "text") and res.text:
-                reply = format_ai_response(res.text)
-                reply = enforce_identity(reply)
-                
-                # Convert AI response text into audio voice reply
-                clean_text = re.sub(r'<[^>]+>', '', reply)
-                temp_audio = f"voice_reply_{m.message_id}.ogg"
-                tts = gTTS(text=clean_text, lang='en')
-                tts.save(temp_audio)
-
-                with open(temp_audio, 'rb') as v_file:
-                    bot.send_voice(m.chat.id, voice=v_file, reply_to_message_id=m.message_id)
-
-                if os.path.exists(temp_audio):
-                    os.remove(temp_audio)
-
-                save_chat(uid, "user", "[Voice Note Sent]")
-                save_chat(uid, "bot", reply)
-
-                if not is_admin(uid) and not profile["premium"]:
-                    profile["count"] += 1
-                    save_profile(uid, profile)
-                return
-        except Exception: 
-            continue
-    bot.reply_to(m, "Voice processing error")
-
-# Main Chat Handler: Fast streaming
+# Main direct chat handler (Fast reply, no dot placeholders)
 @bot.message_handler(func=lambda m: True)
 def chat(m):
     uid = m.from_user.id
@@ -647,11 +278,17 @@ def chat(m):
         bot.reply_to(m, "Limit reached")
         return
     
+    # Shows non-intrusive typing status at the top
     bot.send_chat_action(m.chat.id, "typing")
-    status_msg = bot.reply_to(m, ".")
     
-    reply = ask_ai_stream(uid, m.text, m.chat.id, status_msg.message_id)
+    # Direct answer without dot messages or full stops
+    reply = ask_ai(uid, m.text)
     
+    try:
+        bot.reply_to(m, reply, parse_mode="HTML")
+    except Exception:
+        bot.reply_to(m, reply)
+        
     save_chat(uid, "user", m.text)
     save_chat(uid, "bot", reply)
     
