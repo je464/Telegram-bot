@@ -4,6 +4,7 @@ import os
 import re
 import shelve
 import threading
+import time
 import yt_dlp
 from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
@@ -214,6 +215,93 @@ def ask_ai(uid, text):
 
     return "AI servers are currently busy. Please try again later."
 
+def ask_ai_stream(uid, text, chat_id, message_id):
+    """Displays a spinning animation while waiting for response, then streams AI output."""
+    with shelve.open("logs") as db:
+        history = db.get(str(uid), [])
+
+    contents = []
+    last_role = None
+    
+    for entry in history[-10:]:
+        role = "user" if entry["role"] == "user" else "model"
+        if role != last_role:
+            contents.append(types.Content(role=role, parts=[types.Part.from_text(text=str(entry["text"]))]))
+            last_role = role
+
+    if contents and contents[-1].role == "user":
+        contents.pop()
+
+    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=str(text))]))
+
+    accumulated_text = ""
+    last_update_time = time.time()
+    
+    spinner_frames = ["⏳ Thinking.", "⌛ Thinking..", "⏳ Thinking..."]
+    frame_idx = 0
+
+    for model_name in AVAILABLE_MODELS:
+        try:
+            response_stream = client.models.generate_content_stream(
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT
+                )
+            )
+
+            for chunk in response_stream:
+                if chunk.text:
+                    accumulated_text += chunk.text
+                    
+                    if time.time() - last_update_time > 1.3:
+                        formatted = format_ai_response(accumulated_text)
+                        formatted = enforce_identity(formatted)
+                        try:
+                            bot.edit_message_text(
+                                chat_id=chat_id,
+                                message_id=message_id,
+                                text=formatted + " ▌",
+                                parse_mode="HTML"
+                            )
+                        except Exception:
+                            pass
+                        last_update_time = time.time()
+                else:
+                    if time.time() - last_update_time > 1.3:
+                        frame_idx = (frame_idx + 1) % len(spinner_frames)
+                        try:
+                            bot.edit_message_text(
+                                chat_id=chat_id,
+                                message_id=message_id,
+                                text=spinner_frames[frame_idx]
+                            )
+                        except Exception:
+                            pass
+                        last_update_time = time.time()
+
+            final_formatted = format_ai_response(accumulated_text)
+            final_formatted = enforce_identity(final_formatted)
+            try:
+                bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=final_formatted,
+                    parse_mode="HTML"
+                )
+            except Exception:
+                bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=final_formatted
+                )
+            return final_formatted
+
+        except Exception:
+            continue
+
+    return ask_ai(uid, text)
+
 # =========================================================
 # MENUS & HANDLERS
 # =========================================================
@@ -306,6 +394,12 @@ def handle_social_video_link(m):
                     reply = enforce_identity(reply)
                     save_chat(uid, "user", f"[Video Link]: {m.text}")
                     save_chat(uid, "bot", reply)
+
+                    try:
+                        bot.delete_message(m.chat.id, status_msg.message_id)
+                    except Exception:
+                        pass
+
                     try:
                         bot.reply_to(m, reply, parse_mode="HTML")
                     except Exception:
@@ -461,6 +555,12 @@ def handle_video(m):
                     reply = enforce_identity(reply)
                     save_chat(uid, "user", "[Video Sent]")
                     save_chat(uid, "bot", reply)
+
+                    try:
+                        bot.delete_message(m.chat.id, status_msg.message_id)
+                    except Exception:
+                        pass
+
                     try:
                         bot.reply_to(m, reply, parse_mode="HTML")
                     except Exception:
@@ -524,8 +624,6 @@ def voice(m):
             continue
     bot.reply_to(m, "Voice error")
 
-
-# 👇 PASTE THE FIXED CHAT FUNCTION HERE (REPLACING YOUR OLD INCOMPLETE ONE) 👇
 @bot.message_handler(func=lambda m: True)
 def chat(m):
     uid = m.from_user.id
@@ -535,20 +633,16 @@ def chat(m):
         return
     
     bot.send_chat_action(m.chat.id, "typing")
-    reply = ask_ai(uid, m.text)
+    status_msg = bot.reply_to(m, "⏳ Thinking.")
+    
+    reply = ask_ai_stream(uid, m.text, m.chat.id, status_msg.message_id)
     
     save_chat(uid, "user", m.text)
     save_chat(uid, "bot", reply)
     
-    try:
-        bot.reply_to(m, reply, parse_mode="HTML")
-    except Exception:
-        bot.reply_to(m, reply)
-    
     if not is_admin(uid) and not profile["premium"]:
         profile["count"] += 1
         save_profile(uid, profile)
-
 
 # =========================================================
 # WEBHOOK ENDPOINTS & THREADING
@@ -569,5 +663,3 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-    
-# =
