@@ -1,3 +1,4 @@
+gunicorn
 gtts
 pyTelegramBotAPI
 google-genai
