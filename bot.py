@@ -534,7 +534,7 @@ def voice(m):
                 clean_text = re.sub(r'<[^>]+>', '', reply)
                 temp_audio = f"voice_reply_{m.message_id}.ogg"
                 
-      tts = gTTS(text=clean_text, lang='en')
+                tts = gTTS(text=clean_text, lang='en')
                 tts.save(temp_audio)
 
                 with open(temp_audio, 'rb') as v_file:
