@@ -540,7 +540,7 @@ def handle_photo(m):
                             return
                 except Exception:
                     continue
-        bot.reply_to(m, "Could not edit this image.")
+            bot.reply_to(m, "Could not edit this image.")
             return
 
         prompt = m.caption if m.caption else "Describe this image in detail."
@@ -725,3 +725,4 @@ def index():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+        
