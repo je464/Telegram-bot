@@ -5,6 +5,7 @@ import re
 import shelve
 import threading
 import time
+import pytz
 import yt_dlp
 from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
@@ -78,6 +79,12 @@ FREE_LIMIT = 5
 PREMIUM_PRICE = 100
 PREMIUM_DAYS = 30
 
+GREETING_KEYWORDS = [
+    "good morning", "morning", "good afternoon", "afternoon", 
+    "good evening", "evening", "good night", "night",
+    "hello", "hi", "hey", "amen", "thank you", "thanks"
+]
+
 # =========================================================
 # PROFILE & LOGS
 # =========================================================
@@ -89,7 +96,8 @@ def get_profile(uid):
                 "premium": False,
                 "count": 0,
                 "date": str(date.today()),
-                "expiry": "2000-01-01"
+                "expiry": "2000-01-01",
+                "timezone": "Africa/Lagos"
             }
         u = db[k]
         if u["date"] != str(date.today()):
@@ -121,6 +129,49 @@ def save_chat(uid, role, text):
             "text": text
         })
 
+def is_greeting_reply(text: str) -> bool:
+    clean = text.lower().strip()
+    return any(kw in clean for kw in GREETING_KEYWORDS) and len(clean.split()) <= 6
+
+# =========================================================
+# DYNAMIC TIME & GREETING ENGINE
+# =========================================================
+def get_dynamic_prompt(uid):
+    profile = get_profile(uid)
+    user_tz_str = profile.get("timezone", "Africa/Lagos")
+
+    try:
+        user_tz = pytz.timezone(user_tz_str)
+        now = datetime.now(user_tz)
+    except Exception:
+        now = datetime.now()
+
+    hour = now.hour
+    day_name = now.strftime("%A")
+    formatted_time = now.strftime("%I:%M %p")
+
+    greeting_instructions = ""
+
+    if 6 <= hour < 12:
+        greeting_instructions = (
+            "GREETING INSTRUCTION: Start your reply with 'Good morning! How was your night?' "
+            "and include a short word of prayer asking God to guide and protect the user's daily activities today."
+        )
+    elif 12 <= hour < 18:
+        if day_name == "Saturday":
+            greeting_instructions = "GREETING INSTRUCTION: Start your reply with 'Good afternoon! Hope you are enjoying your weekend!'"
+        else:
+            greeting_instructions = "GREETING INSTRUCTION: Start your reply with 'Good afternoon! How is your day going so far? How can I be of assistance to you?'"
+    elif 0 <= hour < 6:
+        greeting_instructions = "GREETING INSTRUCTION: Start your reply with 'Good night! Have some rest for tomorrow's activities.'"
+
+    return f"""{SYSTEM_PROMPT}
+
+DYNAMIC TIME & USER CONTEXT:
+- User Timezone: {user_tz_str}
+- Current Local Time: {day_name}, {formatted_time}
+{greeting_instructions}"""
+
 # =========================================================
 # AI ENGINE
 # =========================================================
@@ -145,7 +196,7 @@ def format_ai_response(text: str) -> str:
                 formatted += process_markdown_text(part)
         text = formatted
     else:
-        text = process_markdown_text(text)
+        text = process_markdown_text(part) if 'part' in locals() else process_markdown_text(text)
 
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     return "\n\n".join(paragraphs)
@@ -168,19 +219,22 @@ def ask_ai(uid, text):
 
     contents.append(types.Content(role="user", parts=[types.Part.from_text(text=str(text))]))
 
+    dynamic_sys_prompt = get_dynamic_prompt(uid)
+
     for model_name in AVAILABLE_MODELS:
         try:
             response = client.models.generate_content(
                 model=model_name,
                 contents=contents,
                 config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT
+                    system_instruction=dynamic_sys_prompt
                 )
             )
 
             if hasattr(response, "text") and response.text:
                 return format_ai_response(response.text)
-        except Exception:
+        except Exception as e:
+            print(f"Model {model_name} error: {e}")
             continue
 
     return "AI servers are currently busy. Please try again later."
@@ -206,6 +260,76 @@ def start(m):
     get_profile(uid)
     text = "Welcome back Creator 👑" if uid == OWNER_ID else "Hello, I am your AI assistant created by Udoka Jephthah 🤖"
     bot.send_message(m.chat.id, text, reply_markup=main_menu(uid))
+
+@bot.message_handler(commands=['timezone', 'setlocation', 'resettime'])
+def set_timezone(m):
+    uid = m.from_user.id
+    tz_input = m.text.partition(' ')[2].strip()
+
+    if not tz_input:
+        bot.reply_to(m, "Provide your city or timezone!\nExample: <code>/timezone London</code> or <code>/timezone Africa/Lagos</code>", parse_mode="HTML")
+        return
+
+    matched_tz = None
+    for tz in pytz.all_timezones:
+        if tz_input.lower() in tz.lower():
+            matched_tz = tz
+            break
+
+    if matched_tz:
+        profile = get_profile(uid)
+        profile["timezone"] = matched_tz
+        save_profile(uid, profile)
+
+        user_now = datetime.now(pytz.timezone(matched_tz)).strftime("%I:%M %p")
+        bot.reply_to(m, f"✅ Timezone updated to <b>{matched_tz}</b>!\nLocal time: <b>{user_now}</b>.", parse_mode="HTML")
+    else:
+        bot.reply_to(m, "❌ Invalid location. Try city names like <code>London</code>, <code>Lagos</code>, <code>Tokyo</code>, or <code>New_York</code>.", parse_mode="HTML")
+
+@bot.message_handler(commands=['users'])
+def list_users(m):
+    uid = m.from_user.id
+    if not is_admin(uid):
+        return
+
+    with shelve.open("db") as db:
+        total_users = len(db.keys())
+        premium_users = sum(1 for k, v in db.items() if v.get("premium"))
+
+    msg = f"<b>📊 Bot User Statistics</b>\n\n"
+    msg += f"• <b>Total Registered Users:</b> {total_users}\n"
+    msg += f"• <b>Premium Users:</b> {premium_users}\n"
+    bot.reply_to(m, msg, parse_mode="HTML")
+
+@bot.message_handler(commands=['chatlogs'])
+def view_chat_logs(m):
+    uid = m.from_user.id
+    if not is_admin(uid):
+        return
+
+    args = m.text.split()
+    if len(args) < 2:
+        bot.reply_to(m, "Usage: <code>/chatlogs USER_ID</code>", parse_mode="HTML")
+        return
+
+    target_uid = args[1].strip()
+
+    with shelve.open("logs") as db:
+        logs = db.get(target_uid, [])
+
+    if not logs:
+        bot.reply_to(m, f"No chat logs found for User ID: {target_uid}")
+        return
+
+    output = f"<b>📋 Recent Chat Logs for {target_uid}:</b>\n\n"
+    for entry in logs[-10:]:
+        role = "👤 User" if entry["role"] == "user" else "🤖 Bot"
+        output += f"<b>{role}:</b> {html.escape(entry['text'])}\n---\n"
+
+    if len(output) > 4000:
+        output = output[:4000]
+
+    bot.reply_to(m, output, parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda c: True)
 def cb(c):
@@ -260,7 +384,7 @@ def speak_handler(m):
         save_chat(uid, "user", f"[Voice Request]: {user_text}")
         save_chat(uid, "bot", f"[Voice Reply]: {clean_text}")
 
-        if not is_admin(uid) and not profile["premium"]:
+        if not is_admin(uid) and not profile["premium"] and not is_greeting_reply(user_text):
             profile["count"] += 1
             save_profile(uid, profile)
     except Exception as e:
@@ -306,7 +430,7 @@ def handle_social_video_link(m):
                 res = client.models.generate_content(
                     model=model,
                     contents=[video_file, prompt],
-                    config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
+                    config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid))
                 )
                 if hasattr(res, "text") and res.text:
                     reply = format_ai_response(res.text)
@@ -416,7 +540,7 @@ def handle_photo(m):
                             return
                 except Exception:
                     continue
-            bot.reply_to(m, "Could not edit this image.")
+        bot.reply_to(m, "Could not edit this image.")
             return
 
         prompt = m.caption if m.caption else "Describe this image in detail."
@@ -425,7 +549,7 @@ def handle_photo(m):
                 res = client.models.generate_content(
                     model=model,
                     contents=[image, prompt],
-                    config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
+                    config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid))
                 )
                 if hasattr(res, "text") and res.text:
                     reply = format_ai_response(res.text)
@@ -469,7 +593,7 @@ def handle_video(m):
                 res = client.models.generate_content(
                     model=model,
                     contents=[video_file, prompt],
-                    config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
+                    config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid))
                 )
                 if hasattr(res, "text") and res.text:
                     reply = format_ai_response(res.text)
@@ -492,7 +616,7 @@ def handle_video(m):
             except Exception:
                 continue
 
-        bot.reply_to(m, "Failed to analyze video.")
+        bot.edit_message_text("Failed to analyze video.", m.chat.id, status_msg.message_id)
 
     except Exception as e:
         bot.reply_to(m, f"Video error: {str(e)}")
@@ -519,14 +643,14 @@ def voice(m):
 
     audio_part = types.Part.from_bytes(data=data, mime_type="audio/ogg")
     
-    temp_audio = None
     for model in AVAILABLE_MODELS:
+        temp_audio = None
         try:
             res = client.models.generate_content(
                 model=model, 
                 contents=[audio_part],
                 config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT + "\nRespond concisely."
+                    system_instruction=get_dynamic_prompt(uid) + "\nRespond concisely."
                 )
             )
             if hasattr(res, "text") and res.text:
@@ -560,7 +684,10 @@ def voice(m):
 def text_handler(m):
     uid = m.from_user.id
     profile = get_profile(uid)
-    if not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
+
+    is_free_greeting = is_greeting_reply(m.text)
+
+    if not is_free_greeting and not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
         bot.reply_to(m, "Limit reached")
         return
 
@@ -575,7 +702,7 @@ def text_handler(m):
     except Exception:
         bot.reply_to(m, reply)
 
-    if not is_admin(uid) and not profile["premium"]:
+    if not is_free_greeting and not is_admin(uid) and not profile["premium"]:
         profile["count"] += 1
         save_profile(uid, profile)
 
