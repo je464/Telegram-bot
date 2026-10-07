@@ -1,8 +1,9 @@
-gunicorn
-gtts
+pytz
+Flask
 pyTelegramBotAPI
 google-genai
 python-dotenv
-Flask
 Pillow
+gTTS
 yt-dlp
+gunicorn
