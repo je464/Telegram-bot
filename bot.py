@@ -136,7 +136,7 @@ def is_greeting_reply(text: str) -> bool:
 # =========================================================
 # DYNAMIC TIME & GREETING ENGINE
 # =========================================================
-def get_dynamic_prompt(uid):
+def get_dynamic_prompt(uid, user_text=""):
     profile = get_profile(uid)
     user_tz_str = profile.get("timezone", "Africa/Lagos")
 
@@ -152,18 +152,21 @@ def get_dynamic_prompt(uid):
 
     greeting_instructions = ""
 
-    if 6 <= hour < 12:
-        greeting_instructions = (
-            "GREETING INSTRUCTION: Start your reply with 'Good morning! How was your night?' "
-            "and include a short word of prayer asking God to guide and protect the user's daily activities today."
-        )
-    elif 12 <= hour < 18:
-        if day_name == "Saturday":
-            greeting_instructions = "GREETING INSTRUCTION: Start your reply with 'Good afternoon! Hope you are enjoying your weekend!'"
-        else:
-            greeting_instructions = "GREETING INSTRUCTION: Start your reply with 'Good afternoon! How is your day going so far? How can I be of assistance to you?'"
-    elif 0 <= hour < 6:
-        greeting_instructions = "GREETING INSTRUCTION: Start your reply with 'Good night! Have some rest for tomorrow's activities.'"
+    if is_greeting_reply(user_text):
+        if 6 <= hour < 12:
+            greeting_instructions = (
+                "GREETING INSTRUCTION: Start your reply with 'Good morning! How was your night?' "
+                "and include a short word of prayer asking God to guide and protect the user's daily activities today."
+            )
+        elif 12 <= hour < 18:
+            if day_name == "Saturday":
+                greeting_instructions = "GREETING INSTRUCTION: Start your reply with 'Good afternoon! Hope you are enjoying your weekend!'"
+            else:
+                greeting_instructions = "GREETING INSTRUCTION: Start your reply with 'Good afternoon! How is your day going so far? How can I be of assistance to you?'"
+        elif 0 <= hour < 6:
+            greeting_instructions = "GREETING INSTRUCTION: Start your reply with 'Good night! Have some rest for tomorrow's activities.'"
+    else:
+        greeting_instructions = "GREETING INSTRUCTION: Do NOT include any time-of-day greeting intro (like 'Good night' or 'Good morning') unless explicitly asked. Answer the user's question directly."
 
     return f"""{SYSTEM_PROMPT}
 
@@ -177,10 +180,9 @@ DYNAMIC TIME & USER CONTEXT:
 # =========================================================
 def process_markdown_text(text: str) -> str:
     text = re.sub(r'^#{1,6}\s*(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
-    text = html.escape(text)
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
     text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
-    text = text.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
+    text = html.unescape(text)
     return text
 
 def format_ai_response(text: str) -> str:
@@ -196,7 +198,7 @@ def format_ai_response(text: str) -> str:
                 formatted += process_markdown_text(part)
         text = formatted
     else:
-        text = process_markdown_text(part) if 'part' in locals() else process_markdown_text(text)
+        text = process_markdown_text(text)
 
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     return "\n\n".join(paragraphs)
@@ -219,7 +221,7 @@ def ask_ai(uid, text):
 
     contents.append(types.Content(role="user", parts=[types.Part.from_text(text=str(text))]))
 
-    dynamic_sys_prompt = get_dynamic_prompt(uid)
+    dynamic_sys_prompt = get_dynamic_prompt(uid, text)
 
     for model_name in AVAILABLE_MODELS:
         try:
@@ -430,7 +432,7 @@ def handle_social_video_link(m):
                 res = client.models.generate_content(
                     model=model,
                     contents=[video_file, prompt],
-                    config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid))
+                    config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, m.text))
                 )
                 if hasattr(res, "text") and res.text:
                     reply = format_ai_response(res.text)
@@ -549,7 +551,7 @@ def handle_photo(m):
                 res = client.models.generate_content(
                     model=model,
                     contents=[image, prompt],
-                    config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid))
+                    config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, prompt))
                 )
                 if hasattr(res, "text") and res.text:
                     reply = format_ai_response(res.text)
@@ -593,7 +595,7 @@ def handle_video(m):
                 res = client.models.generate_content(
                     model=model,
                     contents=[video_file, prompt],
-                    config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid))
+                    config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, prompt))
                 )
                 if hasattr(res, "text") and res.text:
                     reply = format_ai_response(res.text)
@@ -624,7 +626,7 @@ def handle_video(m):
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
 
-# Voice Note Handler: Responds with a playable Voice Note
+# Voice Note Handler
 @bot.message_handler(content_types=['voice'])
 def voice(m):
     uid = m.from_user.id
@@ -650,7 +652,7 @@ def voice(m):
                 model=model, 
                 contents=[audio_part],
                 config=types.GenerateContentConfig(
-                    system_instruction=get_dynamic_prompt(uid) + "\nRespond concisely."
+                    system_instruction=get_dynamic_prompt(uid, "voice note") + "\nRespond concisely."
                 )
             )
             if hasattr(res, "text") and res.text:
@@ -725,4 +727,4 @@ def index():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-        
+                     
