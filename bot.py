@@ -26,17 +26,26 @@ from google.genai import types
 load_dotenv()
 
 # =========================================================
-# CONFIG
+# CONFIG & MULTI-KEY SETUP (UP TO 6 API KEYS)
 # =========================================================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://telegram-bot-4-p8mu.onrender.com")
 
-if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
-    raise ValueError("Missing TELEGRAM_TOKEN or GEMINI_API_KEY in environment variables")
+API_KEYS = [
+    os.getenv("GEMINI_API_KEY"),
+    os.getenv("GEMINI_API_KEY_2"),
+    os.getenv("GEMINI_API_KEY_3"),
+    os.getenv("GEMINI_API_KEY_4"),
+    os.getenv("GEMINI_API_KEY_5"),
+    os.getenv("GEMINI_API_KEY_6"),
+]
+# Filter out any keys that are not defined in environment variables
+API_KEYS = [k for k in API_KEYS if k]
+
+if not TELEGRAM_TOKEN or not API_KEYS:
+    raise ValueError("Missing TELEGRAM_TOKEN or at least one GEMINI_API_KEY in environment variables")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
-client = genai.Client(api_key=GEMINI_API_KEY)
 app = Flask(__name__)
 
 if WEBHOOK_URL:
@@ -176,7 +185,7 @@ DYNAMIC TIME & USER CONTEXT:
 {greeting_instructions}"""
 
 # =========================================================
-# AI ENGINE
+# AI ENGINE (MULTI-KEY + MULTI-MODEL FALLBACK)
 # =========================================================
 def process_markdown_text(text: str) -> str:
     text = re.sub(r'^#{1,6}\s*(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
@@ -220,24 +229,28 @@ def ask_ai(uid, text):
         contents.pop()
 
     contents.append(types.Content(role="user", parts=[types.Part.from_text(text=str(text))]))
-
     dynamic_sys_prompt = get_dynamic_prompt(uid, text)
 
-    for model_name in AVAILABLE_MODELS:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=dynamic_sys_prompt
+    # LOOP 1: Rotate through every available API key
+    for api_key in API_KEYS:
+        temp_client = genai.Client(api_key=api_key)
+        
+        # LOOP 2: Rotate through every model under the current key
+        for model_name in AVAILABLE_MODELS:
+            try:
+                response = temp_client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=dynamic_sys_prompt
+                    )
                 )
-            )
 
-            if hasattr(response, "text") and response.text:
-                return format_ai_response(response.text)
-        except Exception as e:
-            print(f"Model {model_name} error: {e}")
-            continue
+                if hasattr(response, "text") and response.text:
+                    return format_ai_response(response.text)
+            except Exception as e:
+                print(f"⚠️ Key (...{api_key[-4:]}) | Model {model_name} error: {e}")
+                continue
 
     return "AI servers are currently busy. Please try again later."
 
@@ -424,34 +437,39 @@ def handle_social_video_link(m):
             bot.edit_message_text("Unable to download video.", m.chat.id, status_msg.message_id)
             return
 
-        video_file = client.files.upload(file=temp_filename)
         prompt = "Analyze this video in detail, including both visual content and background audio/dialogue."
 
-        for model in AVAILABLE_MODELS:
+        for api_key in API_KEYS:
+            temp_client = genai.Client(api_key=api_key)
             try:
-                res = client.models.generate_content(
-                    model=model,
-                    contents=[video_file, prompt],
-                    config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, m.text))
-                )
-                if hasattr(res, "text") and res.text:
-                    reply = format_ai_response(res.text)
-                    save_chat(uid, "user", f"[Video Link]: {m.text}")
-                    save_chat(uid, "bot", reply)
-
+                video_file = temp_client.files.upload(file=temp_filename)
+                for model in AVAILABLE_MODELS:
                     try:
-                        bot.delete_message(m.chat.id, status_msg.message_id)
-                    except Exception:
-                        pass
+                        res = temp_client.models.generate_content(
+                            model=model,
+                            contents=[video_file, prompt],
+                            config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, m.text))
+                        )
+                        if hasattr(res, "text") and res.text:
+                            reply = format_ai_response(res.text)
+                            save_chat(uid, "user", f"[Video Link]: {m.text}")
+                            save_chat(uid, "bot", reply)
 
-                    try:
-                        bot.reply_to(m, reply, parse_mode="HTML")
+                            try:
+                                bot.delete_message(m.chat.id, status_msg.message_id)
+                            except Exception:
+                                pass
+
+                            try:
+                                bot.reply_to(m, reply, parse_mode="HTML")
+                            except Exception:
+                                bot.reply_to(m, reply)
+                            if not is_admin(uid) and not profile["premium"]:
+                                profile["count"] += 1
+                                save_profile(uid, profile)
+                            return
                     except Exception:
-                        bot.reply_to(m, reply)
-                    if not is_admin(uid) and not profile["premium"]:
-                        profile["count"] += 1
-                        save_profile(uid, profile)
-                    return
+                        continue
             except Exception:
                 continue
 
@@ -480,24 +498,26 @@ def generate_image_handler(m):
     bot.send_chat_action(m.chat.id, "upload_photo")
     try:
         image_models = ["gemini-3.0-flash-image", "gemini-2.0-flash-image"]
-        for model_name in image_models:
-            try:
-                res = client.models.generate_content(
-                    model=model_name,
-                    contents=[prompt],
-                    config=types.GenerateContentConfig(response_modalities=["IMAGE"])
-                )
-                for part in res.candidates[0].content.parts:
-                    if hasattr(part, "inline_data") and part.inline_data:
-                        bot.send_photo(m.chat.id, photo=part.inline_data.data)
-                        save_chat(uid, "user", f"[Generate Image]: {prompt}")
-                        save_chat(uid, "bot", "[Generated Image Sent]")
-                        if not is_admin(uid) and not profile["premium"]:
-                            profile["count"] += 1
-                            save_profile(uid, profile)
-                        return
-            except Exception:
-                continue
+        for api_key in API_KEYS:
+            temp_client = genai.Client(api_key=api_key)
+            for model_name in image_models:
+                try:
+                    res = temp_client.models.generate_content(
+                        model=model_name,
+                        contents=[prompt],
+                        config=types.GenerateContentConfig(response_modalities=["IMAGE"])
+                    )
+                    for part in res.candidates[0].content.parts:
+                        if hasattr(part, "inline_data") and part.inline_data:
+                            bot.send_photo(m.chat.id, photo=part.inline_data.data)
+                            save_chat(uid, "user", f"[Generate Image]: {prompt}")
+                            save_chat(uid, "bot", "[Generated Image Sent]")
+                            if not is_admin(uid) and not profile["premium"]:
+                                profile["count"] += 1
+                                save_profile(uid, profile)
+                            return
+                except Exception:
+                    continue
         bot.reply_to(m, "Unable to generate image.")
     except Exception:
         bot.reply_to(m, "Image generation error.")
@@ -524,49 +544,53 @@ def handle_photo(m):
                 return
             
             image_models = ["gemini-3.0-flash-image", "gemini-2.0-flash-image"]
-            for model_name in image_models:
-                try:
-                    res = client.models.generate_content(
-                        model=model_name,
-                        contents=[image, edit_prompt],
-                        config=types.GenerateContentConfig(response_modalities=["IMAGE"])
-                    )
-                    for part in res.candidates[0].content.parts:
-                        if hasattr(part, "inline_data") and part.inline_data:
-                            bot.send_photo(m.chat.id, photo=part.inline_data.data)
-                            save_chat(uid, "user", f"[Edit Photo]: {edit_prompt}")
-                            save_chat(uid, "bot", "[Edited Image Sent]")
-                            if not is_admin(uid) and not profile["premium"]:
-                                profile["count"] += 1
-                                save_profile(uid, profile)
-                            return
-                except Exception:
-                    continue
+            for api_key in API_KEYS:
+                temp_client = genai.Client(api_key=api_key)
+                for model_name in image_models:
+                    try:
+                        res = temp_client.models.generate_content(
+                            model=model_name,
+                            contents=[image, edit_prompt],
+                            config=types.GenerateContentConfig(response_modalities=["IMAGE"])
+                        )
+                        for part in res.candidates[0].content.parts:
+                            if hasattr(part, "inline_data") and part.inline_data:
+                                bot.send_photo(m.chat.id, photo=part.inline_data.data)
+                                save_chat(uid, "user", f"[Edit Photo]: {edit_prompt}")
+                                save_chat(uid, "bot", "[Edited Image Sent]")
+                                if not is_admin(uid) and not profile["premium"]:
+                                    profile["count"] += 1
+                                    save_profile(uid, profile)
+                                return
+                    except Exception:
+                        continue
             bot.reply_to(m, "Could not edit this image.")
             return
 
         prompt = m.caption if m.caption else "Describe this image in detail."
-        for model in AVAILABLE_MODELS:
-            try:
-                res = client.models.generate_content(
-                    model=model,
-                    contents=[image, prompt],
-                    config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, prompt))
-                )
-                if hasattr(res, "text") and res.text:
-                    reply = format_ai_response(res.text)
-                    save_chat(uid, "user", "[Photo Sent]")
-                    save_chat(uid, "bot", reply)
-                    try:
-                        bot.reply_to(m, reply, parse_mode="HTML")
-                    except Exception:
-                        bot.reply_to(m, reply)
-                    if not is_admin(uid) and not profile["premium"]:
-                        profile["count"] += 1
-                        save_profile(uid, profile)
-                    return
-            except Exception:
-                continue
+        for api_key in API_KEYS:
+            temp_client = genai.Client(api_key=api_key)
+            for model in AVAILABLE_MODELS:
+                try:
+                    res = temp_client.models.generate_content(
+                        model=model,
+                        contents=[image, prompt],
+                        config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, prompt))
+                    )
+                    if hasattr(res, "text") and res.text:
+                        reply = format_ai_response(res.text)
+                        save_chat(uid, "user", "[Photo Sent]")
+                        save_chat(uid, "bot", reply)
+                        try:
+                            bot.reply_to(m, reply, parse_mode="HTML")
+                        except Exception:
+                            bot.reply_to(m, reply)
+                        if not is_admin(uid) and not profile["premium"]:
+                            profile["count"] += 1
+                            save_profile(uid, profile)
+                        return
+                except Exception:
+                    continue
     except Exception as e:
         bot.reply_to(m, f"Error processing image: {str(e)}")
 
@@ -587,34 +611,39 @@ def handle_video(m):
         with open(temp_filename, "wb") as f:
             f.write(downloaded_file)
 
-        video_file = client.files.upload(file=temp_filename)
         prompt = m.caption if m.caption else "Analyze this video."
 
-        for model in AVAILABLE_MODELS:
+        for api_key in API_KEYS:
+            temp_client = genai.Client(api_key=api_key)
             try:
-                res = client.models.generate_content(
-                    model=model,
-                    contents=[video_file, prompt],
-                    config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, prompt))
-                )
-                if hasattr(res, "text") and res.text:
-                    reply = format_ai_response(res.text)
-                    save_chat(uid, "user", "[Video Sent]")
-                    save_chat(uid, "bot", reply)
-
+                video_file = temp_client.files.upload(file=temp_filename)
+                for model in AVAILABLE_MODELS:
                     try:
-                        bot.delete_message(m.chat.id, status_msg.message_id)
-                    except Exception:
-                        pass
+                        res = temp_client.models.generate_content(
+                            model=model,
+                            contents=[video_file, prompt],
+                            config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, prompt))
+                        )
+                        if hasattr(res, "text") and res.text:
+                            reply = format_ai_response(res.text)
+                            save_chat(uid, "user", "[Video Sent]")
+                            save_chat(uid, "bot", reply)
 
-                    try:
-                        bot.reply_to(m, reply, parse_mode="HTML")
+                            try:
+                                bot.delete_message(m.chat.id, status_msg.message_id)
+                            except Exception:
+                                pass
+
+                            try:
+                                bot.reply_to(m, reply, parse_mode="HTML")
+                            except Exception:
+                                bot.reply_to(m, reply)
+                            if not is_admin(uid) and not profile["premium"]:
+                                profile["count"] += 1
+                                save_profile(uid, profile)
+                            return
                     except Exception:
-                        bot.reply_to(m, reply)
-                    if not is_admin(uid) and not profile["premium"]:
-                        profile["count"] += 1
-                        save_profile(uid, profile)
-                    return
+                        continue
             except Exception:
                 continue
 
@@ -645,39 +674,41 @@ def voice(m):
 
     audio_part = types.Part.from_bytes(data=data, mime_type="audio/ogg")
     
-    for model in AVAILABLE_MODELS:
-        temp_audio = None
-        try:
-            res = client.models.generate_content(
-                model=model, 
-                contents=[audio_part],
-                config=types.GenerateContentConfig(
-                    system_instruction=get_dynamic_prompt(uid, "voice note") + "\nRespond concisely."
+    for api_key in API_KEYS:
+        temp_client = genai.Client(api_key=api_key)
+        for model in AVAILABLE_MODELS:
+            temp_audio = None
+            try:
+                res = temp_client.models.generate_content(
+                    model=model, 
+                    contents=[audio_part],
+                    config=types.GenerateContentConfig(
+                        system_instruction=get_dynamic_prompt(uid, "voice note") + "\nRespond concisely."
+                    )
                 )
-            )
-            if hasattr(res, "text") and res.text:
-                reply = format_ai_response(res.text)
-                clean_text = re.sub(r'<[^>]+>', '', reply)
-                temp_audio = f"voice_reply_{m.message_id}.ogg"
-                
-                tts = gTTS(text=clean_text, lang='en')
-                tts.save(temp_audio)
+                if hasattr(res, "text") and res.text:
+                    reply = format_ai_response(res.text)
+                    clean_text = re.sub(r'<[^>]+>', '', reply)
+                    temp_audio = f"voice_reply_{m.message_id}.ogg"
+                    
+                    tts = gTTS(text=clean_text, lang='en')
+                    tts.save(temp_audio)
 
-                with open(temp_audio, 'rb') as v_file:
-                    bot.send_voice(m.chat.id, voice=v_file, reply_to_message_id=m.message_id)
+                    with open(temp_audio, 'rb') as v_file:
+                        bot.send_voice(m.chat.id, voice=v_file, reply_to_message_id=m.message_id)
 
-                save_chat(uid, "user", "[Voice Note Sent]")
-                save_chat(uid, "bot", reply)
+                    save_chat(uid, "user", "[Voice Note Sent]")
+                    save_chat(uid, "bot", reply)
 
-                if not is_admin(uid) and not profile["premium"]:
-                    profile["count"] += 1
-                    save_profile(uid, profile)
-                return
-        except Exception:
-            continue
-        finally:
-            if temp_audio and os.path.exists(temp_audio):
-                os.remove(temp_audio)
+                    if not is_admin(uid) and not profile["premium"]:
+                        profile["count"] += 1
+                        save_profile(uid, profile)
+                    return
+            except Exception:
+                continue
+            finally:
+                if temp_audio and os.path.exists(temp_audio):
+                    os.remove(temp_audio)
 
     bot.reply_to(m, "Failed to process voice note.")
 
@@ -727,4 +758,4 @@ def index():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-                     
+
