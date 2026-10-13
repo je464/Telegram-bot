@@ -1,9 +1,10 @@
-pytz
-Flask
-pyTelegramBotAPI
+pytelegrambotapi
 google-genai
+flask
 python-dotenv
-Pillow
-gTTS
+pytz
 yt-dlp
+pillow
+gtts
+reportlab
 gunicorn
