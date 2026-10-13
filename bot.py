@@ -7,6 +7,14 @@ import threading
 import time
 import pytz
 import yt_dlp
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
 from flask import Flask, request
@@ -17,7 +25,8 @@ import telebot
 from telebot.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    LabeledPrice
+    LabeledPrice,
+    BotCommand
 )
 
 from google import genai
@@ -47,6 +56,22 @@ if not TELEGRAM_TOKEN or not API_KEYS:
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
 app = Flask(__name__)
+
+# Configure Telegram's built-in command menu
+try:
+    bot.set_my_commands([
+        BotCommand("start", "Start the bot"),
+        BotCommand("timezone", "Set your local timezone"),
+        BotCommand("talk", "Generate voice reply from text"),
+        BotCommand("image", "Generate image from text prompt"),
+        BotCommand("pdf", "Generate a downloadable PDF document"),
+        BotCommand("email", "Send an email via secure SMTP"),
+        BotCommand("users", "View user statistics (Admin)"),
+        BotCommand("chatlogs", "View user chat logs (Admin)")
+    ])
+    print("✅ Telegram command menu successfully configured.")
+except Exception as e:
+    print(f"❌ Error setting bot commands: {e}")
 
 if WEBHOOK_URL:
     full_webhook_url = f"{WEBHOOK_URL.rstrip('/')}/{TELEGRAM_TOKEN}"
@@ -301,6 +326,90 @@ def set_timezone(m):
     else:
         bot.reply_to(m, "❌ Invalid location. Try city names like <code>London</code>, <code>Lagos</code>, <code>Tokyo</code>, or <code>New_York</code>.", parse_mode="HTML")
 
+@bot.message_handler(commands=['pdf'])
+def pdf_handler(m):
+    uid = m.from_user.id
+    profile = get_profile(uid)
+    if not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
+        bot.reply_to(m, "Limit reached")
+        return
+
+    content_text = m.text.partition(' ')[2].strip()
+    if not content_text:
+        bot.reply_to(m, "Please provide text content for the PDF! Example: /pdf Report Summary: All systems are optimal.")
+        return
+
+    pdf_filename = f"document_{m.message_id}.pdf"
+    try:
+        doc = SimpleDocTemplate(pdf_filename, pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = [Paragraph(content_text.replace('\n', '<br/>'), styles['Normal'])]
+        doc.build(story)
+
+        with open(pdf_filename, 'rb') as pdf_file:
+            bot.send_document(m.chat.id, document=pdf_file, caption="📄 Here is your generated PDF document.")
+
+        save_chat(uid, "user", f"[PDF Request]: {content_text}")
+        save_chat(uid, "bot", "[PDF Document Sent]")
+
+        if not is_admin(uid) and not profile["premium"]:
+            profile["count"] += 1
+            save_profile(uid, profile)
+    except Exception as e:
+        bot.reply_to(m, f"PDF generation error: {str(e)}")
+    finally:
+        if os.path.exists(pdf_filename):
+            os.remove(pdf_filename)
+
+@bot.message_handler(commands=['email'])
+def email_handler(m):
+    uid = m.from_user.id
+    profile = get_profile(uid)
+    if not is_admin(uid) and not profile["premium"] and profile["count"] >= FREE_LIMIT:
+        bot.reply_to(m, "Limit reached")
+        return
+
+    parts = m.text.partition(' ')[2].strip().split('|')
+    if len(parts) < 3:
+        bot.reply_to(m, "Usage: <code>/email recipient@example.com | Subject | Message Body</code>", parse_mode="HTML")
+        return
+
+    recipient = parts[0].strip()
+    subject = parts[1].strip()
+    body = parts[2].strip()
+
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+
+    if not smtp_user or not smtp_pass:
+        bot.reply_to(m, "SMTP credentials are not configured on this bot.")
+        return
+
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = smtp_user
+        msg['To'] = recipient
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.sendmail(smtp_user, recipient, msg.as_string())
+        server.quit()
+
+        bot.reply_to(m, f"✅ Email successfully sent to <b>{recipient}</b>!", parse_mode="HTML")
+        save_chat(uid, "user", f"[Email Request]: To {recipient}")
+        save_chat(uid, "bot", f"[Email Sent successfully to {recipient}]")
+
+        if not is_admin(uid) and not profile["premium"]:
+            profile["count"] += 1
+            save_profile(uid, profile)
+    except Exception as e:
+        bot.reply_to(m, f"❌ Failed to send email: {str(e)}")
+
 @bot.message_handler(commands=['users'])
 def list_users(m):
     uid = m.from_user.id
@@ -437,7 +546,7 @@ def handle_social_video_link(m):
             bot.edit_message_text("Unable to download video.", m.chat.id, status_msg.message_id)
             return
 
-        prompt = "Analyze this video in detail, including both visual content and background audio/dialogue."
+        prompt = "Analyze this video in detail, covering all visuals and audio."
 
         for api_key in API_KEYS:
             temp_client = genai.Client(api_key=api_key)
@@ -464,6 +573,10 @@ def handle_social_video_link(m):
                                 bot.reply_to(m, reply, parse_mode="HTML")
                             except Exception:
                                 bot.reply_to(m, reply)
+
+                            with open(temp_filename, 'rb') as v_file:
+                                bot.send_video(m.chat.id, video=v_file, caption="Here is your raw video file.")
+
                             if not is_admin(uid) and not profile["premium"]:
                                 profile["count"] += 1
                                 save_profile(uid, profile)
@@ -611,7 +724,7 @@ def handle_video(m):
         with open(temp_filename, "wb") as f:
             f.write(downloaded_file)
 
-        prompt = m.caption if m.caption else "Analyze this video."
+        prompt = m.caption if m.caption else "Analyze this video, covering all visuals and audio."
 
         for api_key in API_KEYS:
             temp_client = genai.Client(api_key=api_key)
@@ -638,6 +751,10 @@ def handle_video(m):
                                 bot.reply_to(m, reply, parse_mode="HTML")
                             except Exception:
                                 bot.reply_to(m, reply)
+
+                            with open(temp_filename, 'rb') as v_file:
+                                bot.send_video(m.chat.id, video=v_file, caption="Here is your raw video file.")
+
                             if not is_admin(uid) and not profile["premium"]:
                                 profile["count"] += 1
                                 save_profile(uid, profile)
@@ -758,4 +875,3 @@ def index():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
