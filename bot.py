@@ -114,7 +114,7 @@ PREMIUM_DAYS = 30
 GREETING_KEYWORDS = [
     "good morning", "morning", "good afternoon", "afternoon", 
     "good evening", "evening", "good night", "night",
-    "hello", "hi", "hey", "amen", "thank you", "thanks"
+    "hello", "hi", "hey"
 ]
 
 # =========================================================
@@ -165,9 +165,9 @@ def save_chat(uid, role, text, username="Unknown"):
             "username": username
         })
 
-def is_greeting_reply(text: str) -> bool:
+def is_strict_greeting(text: str) -> bool:
     clean = text.lower().strip()
-    return any(kw in clean for kw in GREETING_KEYWORDS) and len(clean.split()) <= 6
+    return any(kw == clean or clean.startswith(kw + " ") for kw in GREETING_KEYWORDS) and len(clean.split()) <= 4
 
 # =========================================================
 # DYNAMIC TIME & GREETING ENGINE
@@ -188,7 +188,7 @@ def get_dynamic_prompt(uid, user_text=""):
 
     greeting_instructions = ""
 
-    if is_greeting_reply(user_text):
+    if is_strict_greeting(user_text):
         if 6 <= hour < 12:
             greeting_instructions = (
                 "GREETING INSTRUCTION: Start your reply with 'Good morning! How was your night?' "
@@ -198,7 +198,7 @@ def get_dynamic_prompt(uid, user_text=""):
         elif 12 <= hour < 18:
             greeting_instructions = (
                 "GREETING INSTRUCTION: Start your reply with 'Good afternoon! How is your day going so far?' "
-                "along with encouraging words to keep up the great productivity."
+                "along with encouraging words to keep up great productivity."
             )
         elif 18 <= hour < 24:
             greeting_instructions = (
@@ -208,7 +208,7 @@ def get_dynamic_prompt(uid, user_text=""):
         elif 0 <= hour < 6:
             greeting_instructions = "GREETING INSTRUCTION: Start your reply with 'Good night! Have some rest for tomorrow's activities.'"
     else:
-        greeting_instructions = "GREETING INSTRUCTION: Do NOT include any time-of-day greeting intro unless explicitly asked. Answer the user's question directly."
+        greeting_instructions = "GREETING INSTRUCTION: Do NOT include any time-of-day greeting intro. Answer the user's message directly and naturally."
 
     return f"""{SYSTEM_PROMPT}
 
@@ -337,8 +337,119 @@ def set_timezone(m):
         bot.reply_to(m, "❌ Invalid location. Try city names like <code>London</code> or <code>Lagos</code>.", parse_mode="HTML")
 
 # =========================================================
-# PDF DOCUMENT VIEWING HANDLER
+# SPECIALIZED HANDLERS (PLACED BEFORE CATCH-ALL TEXT HANDLER)
 # =========================================================
+
+# 1. PDF Generation Command Handler (/pdf)
+@bot.message_handler(commands=['pdf'])
+def pdf_handler(m):
+    uid = m.from_user.id
+    username = m.from_user.username or m.from_user.first_name
+    if check_limit_reached(m):
+        return
+
+    content_text = m.text.partition(' ')[2].strip()
+    if not content_text:
+        bot.reply_to(m, "Please provide text content for the PDF! Example: /pdf Report Summary: All systems are optimal.")
+        return
+
+    pdf_filename = f"document_{m.message_id}.pdf"
+    try:
+        doc = SimpleDocTemplate(pdf_filename, pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = [Paragraph(content_text.replace('\n', '<br/>'), styles['Normal'])]
+        doc.build(story)
+
+        with open(pdf_filename, 'rb') as pdf_file:
+            bot.send_document(m.chat.id, document=pdf_file, caption="📄 Here is your generated PDF document.")
+
+        save_chat(uid, "user", f"[PDF Request]: {content_text}", username)
+        save_chat(uid, "bot", "[PDF Document Sent]", username)
+
+        profile = get_profile(uid, username)
+        if not is_admin(uid) and not profile["premium"]:
+            profile["count"] += 1
+            save_profile(uid, profile)
+    except Exception as e:
+        bot.reply_to(m, f"PDF generation error: {str(e)}")
+    finally:
+        if os.path.exists(pdf_filename):
+            os.remove(pdf_filename)
+
+# 2. Social Media Video Link Handler
+@bot.message_handler(func=lambda m: m.text and any(domain in m.text.lower() for domain in ['tiktok.com', 'facebook.com', 'fb.watch', 'instagram.com', 'youtu', 'vm.tiktok.com']))
+def handle_social_video_link(m):
+    uid = m.from_user.id
+    username = m.from_user.username or m.from_user.first_name
+    if check_limit_reached(m):
+        return
+
+    status_msg = bot.reply_to(m, "Processing video link...")
+    temp_filename = f"social_{m.message_id}.mp4"
+    
+    ydl_opts = {
+        'outtmpl': temp_filename,
+        'format': 'mp4/best[filesize<30M]/best',
+        'quiet': True,
+        'no_warnings': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+    }
+
+    try:
+        url = [word for word in m.text.split() if "http" in word][0]
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+        if not os.path.exists(temp_filename):
+            bot.edit_message_text("Unable to download video.", m.chat.id, status_msg.message_id)
+            return
+
+        prompt = "Analyze this video in detail, covering all visuals and audio."
+
+        for api_key in API_KEYS:
+            temp_client = genai.Client(api_key=api_key)
+            try:
+                video_file = temp_client.files.upload(file=temp_filename)
+                for model in AVAILABLE_MODELS:
+                    try:
+                        res = temp_client.models.generate_content(
+                            model=model,
+                            contents=[video_file, prompt],
+                            config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, m.text))
+                        )
+                        if hasattr(res, "text") and res.text:
+                            reply = format_ai_response(res.text)
+                            save_chat(uid, "user", f"[Video Link]: {m.text}", username)
+                            save_chat(uid, "bot", reply, username)
+
+                            try:
+                                bot.delete_message(m.chat.id, status_msg.message_id)
+                            except Exception:
+                                pass
+
+                            bot.reply_to(m, reply, parse_mode="HTML")
+
+                            with open(temp_filename, 'rb') as v_file:
+                                bot.send_video(m.chat.id, video=v_file, caption="Here is your raw video file.")
+
+                            profile = get_profile(uid, username)
+                            if not is_admin(uid) and not profile["premium"]:
+                                profile["count"] += 1
+                                save_profile(uid, profile)
+                            return
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        bot.edit_message_text("Unable to process video.", m.chat.id, status_msg.message_id)
+    except Exception:
+        bot.edit_message_text("Could not process video link.", m.chat.id, status_msg.message_id)
+    finally:
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
+
+# 3. Universal Document Viewing Handler (.pdf, .py, .html, .txt, etc.)
 @bot.message_handler(content_types=['document'])
 def handle_document(m):
     uid = m.from_user.id
@@ -346,35 +457,32 @@ def handle_document(m):
     if check_limit_reached(m):
         return
 
-    if not m.document.file_name.lower().endswith('.pdf'):
-        bot.reply_to(m, "Please send a valid PDF document.")
-        return
-
-    status_msg = bot.reply_to(m, "Reading PDF document...")
-    temp_pdf = f"pdf_{m.message_id}.pdf"
+    status_msg = bot.reply_to(m, "Reading document...")
+    file_name = m.document.file_name or "document"
+    temp_doc = f"doc_{m.message_id}_{file_name}"
     
     try:
         file_info = bot.get_file(m.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
-        with open(temp_pdf, "wb") as f:
+        with open(temp_doc, "wb") as f:
             f.write(downloaded_file)
 
-        prompt = m.caption if m.caption else "Analyze and summarize this PDF document in detail."
+        prompt = m.caption if m.caption else "Analyze, review, and explain this document in detail."
 
         for api_key in API_KEYS:
             temp_client = genai.Client(api_key=api_key)
             try:
-                pdf_file = temp_client.files.upload(file=temp_pdf)
+                uploaded_file = temp_client.files.upload(file=temp_doc)
                 for model in AVAILABLE_MODELS:
                     try:
                         res = temp_client.models.generate_content(
                             model=model,
-                            contents=[pdf_file, prompt],
+                            contents=[uploaded_file, prompt],
                             config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, prompt))
                         )
                         if hasattr(res, "text") and res.text:
                             reply = format_ai_response(res.text)
-                            save_chat(uid, "user", f"[PDF Upload]: {m.document.file_name}", username)
+                            save_chat(uid, "user", f"[Document Upload]: {file_name}", username)
                             save_chat(uid, "bot", reply, username)
 
                             try:
@@ -393,12 +501,55 @@ def handle_document(m):
             except Exception:
                 continue
 
-        bot.edit_message_text("Unable to process PDF document.", m.chat.id, status_msg.message_id)
+        bot.edit_message_text("Unable to process document.", m.chat.id, status_msg.message_id)
     except Exception as e:
-        bot.reply_to(m, f"PDF error: {str(e)}")
+        bot.reply_to(m, f"Document error: {str(e)}")
     finally:
-        if os.path.exists(temp_pdf):
-            os.remove(temp_pdf)
+        if os.path.exists(temp_doc):
+            os.remove(temp_doc)
+
+# 4. Image Generation Handler (/image, /draw, /generate)
+@bot.message_handler(commands=['image', 'draw', 'generate'])
+def generate_image_handler(m):
+    uid = m.from_user.id
+    username = m.from_user.username or m.from_user.first_name
+    if check_limit_reached(m):
+        return
+
+    prompt = m.text.partition(' ')[2].strip()
+    if not prompt:
+        bot.reply_to(m, "Please provide a description! Example: /draw a futuristic city")
+        return
+
+    bot.send_chat_action(m.chat.id, "upload_photo")
+    try:
+        for api_key in API_KEYS:
+            temp_client = genai.Client(api_key=api_key)
+            for model_name in AVAILABLE_MODELS:
+                try:
+                    res = temp_client.models.generate_content(
+                        model=model_name,
+                        contents=[prompt],
+                        config=types.GenerateContentConfig(
+                            response_modalities=["IMAGE"]
+                        )
+                    )
+                    for candidate in res.candidates:
+                        for part in candidate.content.parts:
+                            if hasattr(part, "inline_data") and part.inline_data:
+                                bot.send_photo(m.chat.id, photo=part.inline_data.data)
+                                save_chat(uid, "user", f"[Generate Image]: {prompt}", username)
+                                save_chat(uid, "bot", "[Generated Image Sent]", username)
+                                profile = get_profile(uid, username)
+                                if not is_admin(uid) and not profile["premium"]:
+                                    profile["count"] += 1
+                                    save_profile(uid, profile)
+                                return
+                except Exception:
+                    continue
+        bot.reply_to(m, "Unable to generate image.")
+    except Exception as e:
+        bot.reply_to(m, f"Image generation error: {str(e)}")
 
 # =========================================================
 # ADMIN STATISTICS & CHAT LOGS
@@ -410,7 +561,6 @@ def list_users(m):
         return
 
     with shelve.open("db") as db:
-        total_users = len(db.keys())
         msg = f"<b>📊 Registered Users Statistics & Chat IDs:</b>\n\n"
         for k, v in db.items():
             uname = v.get("username", "Unknown")
@@ -491,9 +641,6 @@ def success(m):
     save_profile(uid, profile)
     bot.reply_to(m, f"Payment Successful! 🎉 Premium activated for {months} month(s) (until {profile['expiry']}).")
 
-# =========================================================
-# STANDARD HANDLERS (TEXT, VOICE, VIDEO, IMAGES)
-# =========================================================
 @bot.message_handler(commands=['talk', 'voice', 'speak'])
 def speak_handler(m):
     uid = m.from_user.id
@@ -520,7 +667,7 @@ def speak_handler(m):
         save_chat(uid, "bot", f"[Voice Reply]: {clean_text}", username)
 
         profile = get_profile(uid, username)
-        if not is_admin(uid) and not profile["premium"] and not is_greeting_reply(user_text):
+        if not is_admin(uid) and not profile["premium"] and not is_strict_greeting(user_text):
             profile["count"] += 1
             save_profile(uid, profile)
     except Exception as e:
@@ -529,54 +676,18 @@ def speak_handler(m):
         if os.path.exists(temp_audio):
             os.remove(temp_audio)
 
-@bot.message_handler(commands=['image', 'draw', 'generate'])
-def generate_image_handler(m):
-    uid = m.from_user.id
-    username = m.from_user.username or m.from_user.first_name
-    if check_limit_reached(m):
-        return
-
-    prompt = m.text.partition(' ')[2].strip()
-    if not prompt:
-        bot.reply_to(m, "Please provide a description! Example: /draw a futuristic city")
-        return
-
-    bot.send_chat_action(m.chat.id, "upload_photo")
-    try:
-        for api_key in API_KEYS:
-            client = genai.Client(api_key=api_key)
-            res = client.interactions.create(
-                model='models/gemini-3.1-flash-lite-image',
-                input=prompt,
-                generation_config={'temperature': 1, 'max_output_tokens': 65536, 'image_config': {'image_size': '1K'}},
-                response_modalities=['image', 'text'],
-            )
-            for step in res.steps:
-                if step.type == 'model_output' and step.content:
-                    for part in step.content:
-                        if part.type == 'image':
-                            bot.send_photo(m.chat.id, photo=io.BytesIO(base64.b64decode(part.data)))
-                            save_chat(uid, "user", f"[Generate Image]: {prompt}", username)
-                            save_chat(uid, "bot", "[Generated Image Sent]", username)
-                            profile = get_profile(uid, username)
-                            if not is_admin(uid) and not profile["premium"]:
-                                profile["count"] += 1
-                                save_profile(uid, profile)
-                            return
-    except Exception as e:
-        bot.reply_to(m, f"Image generation error: {str(e)}")
-
+# =========================================================
+# CATCH-ALL TEXT HANDLER (MUST ALWAYS BE AT THE VERY BOTTOM)
+# =========================================================
 @bot.message_handler(func=lambda m: True)
 def text_handler(m):
     uid = m.from_user.id
     username = m.from_user.username or m.from_user.first_name
     profile = get_profile(uid, username)
 
-    is_free_greeting = is_greeting_reply(m.text)
+    is_greeting = is_strict_greeting(m.text)
 
-    if not is_free_greeting and not check_limit_reached(m):
-        pass
-    elif not is_free_greeting:
+    if not is_greeting and check_limit_reached(m):
         return
 
     bot.send_chat_action(m.chat.id, "typing")
@@ -590,7 +701,7 @@ def text_handler(m):
     except Exception:
         bot.reply_to(m, reply)
 
-    if not is_free_greeting and not is_admin(uid) and not profile["premium"]:
+    if not is_greeting and not is_admin(uid) and not profile["premium"]:
         profile["count"] += 1
         save_profile(uid, profile)
 
