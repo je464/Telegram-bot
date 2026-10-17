@@ -496,7 +496,7 @@ def handle_document(m):
         if os.path.exists(temp_doc):
             os.remove(temp_doc)
 
-# 4. Image Generation Handler (/image, /draw, /generate) using Gemini 3.1 Flash Lite Image
+# 4. Image Generation Handler (/image, /draw, /generate) using stable Flash model
 @bot.message_handler(commands=['image', 'draw', 'generate'])
 def generate_image_handler(m):
     uid = m.from_user.id
@@ -515,13 +515,10 @@ def generate_image_handler(m):
     try:
         client = genai.Client(api_key=API_KEYS[0])
         res = client.models.generate_content(
-            model="models/gemini-3.1-flash-lite-image",
+            model="gemini-2.5-flash",
             contents=[prompt],
             config=types.GenerateContentConfig(
-                temperature=1,
-                max_output_tokens=65536,
-                response_modalities=["IMAGE"],
-                image_config={"image_size": "1K"}
+                response_modalities=["IMAGE"]
             )
         )
         
