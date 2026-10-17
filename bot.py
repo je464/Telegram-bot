@@ -405,46 +405,40 @@ def handle_social_video_link(m):
             return
 
         prompt = "Analyze this video in detail, covering all visuals and audio."
+        client = genai.Client(api_key=API_KEYS[0])
+        video_file = client.files.upload(file=temp_filename)
+        
+        res = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[video_file, prompt],
+            config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, m.text))
+        )
+        if hasattr(res, "text") and res.text:
+            reply = format_ai_response(res.text)
+            save_chat(uid, "user", f"[Video Link]: {m.text}", username)
+            save_chat(uid, "bot", reply, username)
 
-        for api_key in API_KEYS:
-            temp_client = genai.Client(api_key=api_key)
             try:
-                video_file = temp_client.files.upload(file=temp_filename)
-                for model in AVAILABLE_MODELS:
-                    try:
-                        res = temp_client.models.generate_content(
-                            model=model,
-                            contents=[video_file, prompt],
-                            config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, m.text))
-                        )
-                        if hasattr(res, "text") and res.text:
-                            reply = format_ai_response(res.text)
-                            save_chat(uid, "user", f"[Video Link]: {m.text}", username)
-                            save_chat(uid, "bot", reply, username)
-
-                            try:
-                                bot.delete_message(m.chat.id, status_msg.message_id)
-                            except Exception:
-                                pass
-
-                            bot.reply_to(m, reply, parse_mode="HTML")
-
-                            with open(temp_filename, 'rb') as v_file:
-                                bot.send_video(m.chat.id, video=v_file, caption="Here is your raw video file.")
-
-                            profile = get_profile(uid, username)
-                            if not is_admin(uid) and not profile["premium"]:
-                                profile["count"] += 1
-                                save_profile(uid, profile)
-                            return
-                    except Exception:
-                        continue
+                bot.delete_message(m.chat.id, status_msg.message_id)
             except Exception:
-                continue
+                pass
 
-        bot.edit_message_text("Unable to process video.", m.chat.id, status_msg.message_id)
-    except Exception:
-        bot.edit_message_text("Could not process video link.", m.chat.id, status_msg.message_id)
+            bot.reply_to(m, reply, parse_mode="HTML")
+
+            with open(temp_filename, 'rb') as v_file:
+                bot.send_video(m.chat.id, video=v_file, caption="Here is your raw video file.")
+
+            profile = get_profile(uid, username)
+            if not is_admin(uid) and not profile["premium"]:
+                profile["count"] += 1
+                save_profile(uid, profile)
+        else:
+            bot.edit_message_text("Unable to process video.", m.chat.id, status_msg.message_id)
+    except Exception as e:
+        try:
+            bot.edit_message_text(f"Could not process video link: {str(e)}", m.chat.id, status_msg.message_id)
+        except Exception:
+            bot.reply_to(m, "Could not process video link.")
     finally:
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
@@ -468,47 +462,41 @@ def handle_document(m):
             f.write(downloaded_file)
 
         prompt = m.caption if m.caption else "Analyze, review, and explain this document in detail."
+        client = genai.Client(api_key=API_KEYS[0])
+        uploaded_file = client.files.upload(file=temp_doc)
+        
+        res = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[uploaded_file, prompt],
+            config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, prompt))
+        )
+        if hasattr(res, "text") and res.text:
+            reply = format_ai_response(res.text)
+            save_chat(uid, "user", f"[Document Upload]: {file_name}", username)
+            save_chat(uid, "bot", reply, username)
 
-        for api_key in API_KEYS:
-            temp_client = genai.Client(api_key=api_key)
             try:
-                uploaded_file = temp_client.files.upload(file=temp_doc)
-                for model in AVAILABLE_MODELS:
-                    try:
-                        res = temp_client.models.generate_content(
-                            model=model,
-                            contents=[uploaded_file, prompt],
-                            config=types.GenerateContentConfig(system_instruction=get_dynamic_prompt(uid, prompt))
-                        )
-                        if hasattr(res, "text") and res.text:
-                            reply = format_ai_response(res.text)
-                            save_chat(uid, "user", f"[Document Upload]: {file_name}", username)
-                            save_chat(uid, "bot", reply, username)
-
-                            try:
-                                bot.delete_message(m.chat.id, status_msg.message_id)
-                            except Exception:
-                                pass
-
-                            bot.reply_to(m, reply, parse_mode="HTML")
-                            profile = get_profile(uid, username)
-                            if not is_admin(uid) and not profile["premium"]:
-                                profile["count"] += 1
-                                save_profile(uid, profile)
-                            return
-                    except Exception:
-                        continue
+                bot.delete_message(m.chat.id, status_msg.message_id)
             except Exception:
-                continue
+                pass
 
-        bot.edit_message_text("Unable to process document.", m.chat.id, status_msg.message_id)
+            bot.reply_to(m, reply, parse_mode="HTML")
+            profile = get_profile(uid, username)
+            if not is_admin(uid) and not profile["premium"]:
+                profile["count"] += 1
+                save_profile(uid, profile)
+        else:
+            bot.edit_message_text("Unable to process document.", m.chat.id, status_msg.message_id)
     except Exception as e:
-        bot.reply_to(m, f"Document error: {str(e)}")
+        try:
+            bot.edit_message_text(f"Document error: {str(e)}", m.chat.id, status_msg.message_id)
+        except Exception:
+            bot.reply_to(m, f"Document error: {str(e)}")
     finally:
         if os.path.exists(temp_doc):
             os.remove(temp_doc)
 
-# 4. Image Generation Handler (/image, /draw, /generate)
+# 4. Image Generation Handler (/image, /draw, /generate) using Gemini 3.1 Flash Lite Image
 @bot.message_handler(commands=['image', 'draw', 'generate'])
 def generate_image_handler(m):
     uid = m.from_user.id
@@ -521,35 +509,53 @@ def generate_image_handler(m):
         bot.reply_to(m, "Please provide a description! Example: /draw a futuristic city")
         return
 
+    status_msg = bot.reply_to(m, "Generating image... Please wait.")
     bot.send_chat_action(m.chat.id, "upload_photo")
+    
     try:
-        for api_key in API_KEYS:
-            temp_client = genai.Client(api_key=api_key)
-            for model_name in AVAILABLE_MODELS:
-                try:
-                    res = temp_client.models.generate_content(
-                        model=model_name,
-                        contents=[prompt],
-                        config=types.GenerateContentConfig(
-                            response_modalities=["IMAGE"]
-                        )
-                    )
-                    for candidate in res.candidates:
-                        for part in candidate.content.parts:
-                            if hasattr(part, "inline_data") and part.inline_data:
-                                bot.send_photo(m.chat.id, photo=part.inline_data.data)
-                                save_chat(uid, "user", f"[Generate Image]: {prompt}", username)
-                                save_chat(uid, "bot", "[Generated Image Sent]", username)
-                                profile = get_profile(uid, username)
-                                if not is_admin(uid) and not profile["premium"]:
-                                    profile["count"] += 1
-                                    save_profile(uid, profile)
-                                return
-                except Exception:
-                    continue
-        bot.reply_to(m, "Unable to generate image.")
+        client = genai.Client(api_key=API_KEYS[0])
+        res = client.models.generate_content(
+            model="models/gemini-3.1-flash-lite-image",
+            contents=[prompt],
+            config=types.GenerateContentConfig(
+                temperature=1,
+                max_output_tokens=65536,
+                response_modalities=["IMAGE"],
+                image_config={"image_size": "1K"}
+            )
+        )
+        
+        image_sent = False
+        if res.candidates:
+            for candidate in res.candidates:
+                for part in candidate.content.parts:
+                    if hasattr(part, "inline_data") and part.inline_data:
+                        try:
+                            bot.delete_message(m.chat.id, status_msg.message_id)
+                        except Exception:
+                            pass
+                            
+                        bot.send_photo(m.chat.id, photo=part.inline_data.data)
+                        save_chat(uid, "user", f"[Generate Image]: {prompt}", username)
+                        save_chat(uid, "bot", "[Generated Image Sent]", username)
+                        
+                        profile = get_profile(uid, username)
+                        if not is_admin(uid) and not profile["premium"]:
+                            profile["count"] += 1
+                            save_profile(uid, profile)
+                        image_sent = True
+                        break
+                if image_sent:
+                    break
+                    
+        if not image_sent:
+            bot.edit_message_text("Unable to generate image.", m.chat.id, status_msg.message_id)
+            
     except Exception as e:
-        bot.reply_to(m, f"Image generation error: {str(e)}")
+        try:
+            bot.edit_message_text(f"Image generation error: {str(e)}", m.chat.id, status_msg.message_id)
+        except Exception:
+            bot.reply_to(m, f"Image generation error: {str(e)}")
 
 # =========================================================
 # ADMIN STATISTICS & CHAT LOGS
