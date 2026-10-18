@@ -711,9 +711,9 @@ def text_handler(m):
 # =========================================================
 # FLASK WEBHOOK SERVER
 # =========================================================
-@app.route(f"/{TELEGRAM_TOKEN}", methods=['POST'])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
+@app.route(f"/<token>", methods=['POST'])
+def webhook(token):
+    if token == TELEGRAM_TOKEN and request.headers.get('content-type') == 'application/json':
         update = telebot.types.Update.de_json(request.get_data().decode('utf-8'))
         bot.process_new_updates([update])
         return 'OK', 200
